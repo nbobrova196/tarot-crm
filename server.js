@@ -1,0 +1,1071 @@
+// HTTP-сервер: отдаёт интерфейс из public/ и JSON-API по адресам /api/*.
+// Новые разделы добавляются в массив routes.
+
+import http from 'node:http';
+import { createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { SCHEMA_VERSION, db, dbFile, getStats } from './db.js';
+import { seedCards } from './seed.js';
+
+const rootDir = path.dirname(fileURLToPath(import.meta.url));
+const publicDir = path.join(rootDir, 'public');
+const port = Number(process.env.PORT ?? 3000);
+
+const MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2',
+};
+
+const CARD_ORDER = `
+  ORDER BY
+    CASE arcana WHEN 'major' THEN 0 ELSE 1 END,
+    CASE suit
+      WHEN 'wands' THEN 0
+      WHEN 'cups' THEN 1
+      WHEN 'swords' THEN 2
+      WHEN 'pentacles' THEN 3
+      ELSE 4
+    END,
+    number
+`;
+
+function parseCard(row) {
+  return {
+    ...row,
+    keywords: safeJson(row.keywords),
+    themes: safeJson(row.themes),
+  };
+}
+
+function interpretationsByCard(cardIds) {
+  if (cardIds.length === 0) return new Map();
+
+  const placeholders = cardIds.map(() => '?').join(',');
+  const rows = db.prepare(`
+    SELECT * FROM card_interpretations
+    WHERE card_id IN (${placeholders})
+    ORDER BY
+      CASE orientation WHEN 'upright' THEN 0 ELSE 1 END,
+      created_at,
+      id
+  `).all(...cardIds);
+
+  const map = new Map();
+  for (const row of rows) {
+    if (!map.has(row.card_id)) map.set(row.card_id, []);
+    map.get(row.card_id).push(row);
+  }
+  return map;
+}
+
+function withInterpretations(card, map) {
+  const interpretations = map.get(card.id) ?? [];
+  return {
+    ...card,
+    interpretations,
+    has_personal: interpretations.length > 0 || Boolean(card.notes),
+  };
+}
+
+function safeJson(value) {
+  if (!value) return [];
+  try {
+    return JSON.parse(value);
+  } catch {
+    return [];
+  }
+}
+
+function httpError(message, status) {
+  return Object.assign(new Error(message), { status });
+}
+
+function readJsonBody(req, limit = 1_000_000) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > limit) {
+        reject(httpError('Слишком большой запрос', 413));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8').trim();
+      if (!raw) {
+        resolve({});
+        return;
+      }
+      try {
+        resolve(JSON.parse(raw));
+      } catch {
+        reject(httpError('Некорректные данные в запросе', 400));
+      }
+    });
+
+    req.on('error', reject);
+  });
+}
+
+function normalizeClient(input) {
+  const name = String(input?.name ?? '').trim();
+  if (!name) throw httpError('Укажите имя клиента', 400);
+  if (name.length > 200) throw httpError('Имя слишком длинное (максимум 200 символов)', 400);
+
+  const contact = String(input?.contact ?? '').trim();
+  if (contact.length > 300) throw httpError('Контакт слишком длинный (максимум 300 символов)', 400);
+
+  const birthDate = String(input?.birth_date ?? '').trim();
+  if (birthDate && !/^\d{4}-\d{2}-\d{2}$/.test(birthDate)) {
+    throw httpError('Дата рождения должна быть в формате ГГГГ-ММ-ДД', 400);
+  }
+
+  const notes = String(input?.notes ?? '').trim();
+  if (notes.length > 5000) throw httpError('Заметки слишком длинные (максимум 5000 символов)', 400);
+
+  return {
+    name,
+    contact: contact || null,
+    birth_date: birthDate || null,
+    notes: notes || null,
+  };
+}
+
+const READING_STATUSES = ['draft', 'done', 'archived'];
+
+function limitText(value, max, field) {
+  const text = String(value ?? '').trim();
+  if (text.length > max) {
+    throw httpError(`Поле «${field}» слишком длинное (максимум ${max} символов)`, 400);
+  }
+  return text;
+}
+
+const CARD_ORIENTATIONS = ['upright', 'reversed'];
+
+// Пока ограничиваем тексты расклада двумя тысячами символов.
+const READING_TEXT_MAX = 2000;
+
+// Своя трактовка карты — до тысячи символов.
+const CARD_INTERPRETATION_TEXT_MAX = 1000;
+
+// Запись дневника: заголовок короткий, текст — как заметки к карте.
+const JOURNAL_TITLE_MAX = 200;
+const JOURNAL_TEXT_MAX = 10000;
+const JOURNAL_TAG_MAX = 40;
+const JOURNAL_TAGS_MAX = 20;
+
+function normalizeInterpretation(input) {
+  const orientation = String(input?.orientation ?? 'upright').trim() || 'upright';
+  if (!CARD_ORIENTATIONS.includes(orientation)) {
+    throw httpError('Положение карты должно быть «прямое» или «перевёрнутое»', 400);
+  }
+
+  const title = limitText(input?.title ?? '', 200, 'Название');
+  const body = limitText(input?.body ?? '', CARD_INTERPRETATION_TEXT_MAX, 'Трактовка');
+  if (!body) throw httpError('Трактовка не может быть пустой', 400);
+
+  return { orientation, title: title || null, body };
+}
+
+function todayIso() {
+  const now = new Date();
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+
+function normalizeReading(input) {
+  const readingDate = String(input?.reading_date ?? '').trim() || todayIso();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(readingDate)) {
+    throw httpError('Дата расклада должна быть в формате ГГГГ-ММ-ДД', 400);
+  }
+
+  let clientId = null;
+  const rawClientId = input?.client_id;
+  if (rawClientId !== null && rawClientId !== undefined && rawClientId !== '') {
+    clientId = Number(rawClientId);
+    if (!Number.isInteger(clientId) || clientId <= 0) {
+      throw httpError('Неверный идентификатор клиента', 400);
+    }
+    const client = db.prepare('SELECT id FROM clients WHERE id = ?').get(clientId);
+    if (!client) throw httpError('Клиент не найден', 400);
+  }
+
+  const status = String(input?.status ?? 'draft').trim() || 'draft';
+  if (!READING_STATUSES.includes(status)) {
+    throw httpError('Неизвестный статус расклада', 400);
+  }
+
+  const rawCards = input?.cards ?? [];
+  if (!Array.isArray(rawCards)) throw httpError('Список карт должен быть массивом', 400);
+  if (rawCards.length > 25) throw httpError('Слишком много карт в раскладе (максимум 25)', 400);
+
+  const findCard = db.prepare('SELECT id FROM cards WHERE id = ?');
+  const findInterpretation = db.prepare('SELECT id, card_id, orientation FROM card_interpretations WHERE id = ?');
+
+  const cards = rawCards.map((item, index) => {
+    const cardId = Number(item?.card_id);
+    if (!Number.isInteger(cardId) || cardId <= 0) {
+      throw httpError(`Карта №${index + 1}: неверный идентификатор`, 400);
+    }
+    if (!findCard.get(cardId)) {
+      throw httpError(`Карта №${index + 1} не найдена`, 400);
+    }
+
+    const positionIndex = item?.position_index === undefined
+      ? index + 1
+      : Number(item.position_index);
+    if (!Number.isInteger(positionIndex) || positionIndex < 1) {
+      throw httpError(`Карта №${index + 1}: неверный номер позиции`, 400);
+    }
+
+    const isReversed = item?.is_reversed ? 1 : 0;
+
+    let interpretationId = null;
+    const rawInterpretationId = item?.interpretation_id;
+    if (rawInterpretationId !== null && rawInterpretationId !== undefined && rawInterpretationId !== '') {
+      interpretationId = Number(rawInterpretationId);
+      if (!Number.isInteger(interpretationId) || interpretationId <= 0) {
+        throw httpError(`Карта №${index + 1}: неверная трактовка`, 400);
+      }
+      const interpretation = findInterpretation.get(interpretationId);
+      if (!interpretation) {
+        throw httpError(`Карта №${index + 1}: трактовка не найдена`, 400);
+      }
+      if (interpretation.card_id !== cardId) {
+        throw httpError(`Карта №${index + 1}: трактовка относится к другой карте`, 400);
+      }
+      if (interpretation.orientation !== (isReversed ? 'reversed' : 'upright')) {
+        throw httpError(`Карта №${index + 1}: трактовка не подходит к положению карты`, 400);
+      }
+    }
+
+    return {
+      card_id: cardId,
+      position_index: positionIndex,
+      position_name: limitText(item?.position_name, 120, 'позиция') || null,
+      is_reversed: isReversed,
+      interpretation_id: interpretationId,
+      note: limitText(item?.note, 2000, 'заметка к карте') || null,
+    };
+  });
+
+  if (new Set(cards.map((card) => card.position_index)).size !== cards.length) {
+    throw httpError('Номера позиций карт не должны повторяться', 400);
+  }
+
+  return {
+    reading: {
+      client_id: clientId,
+      title: limitText(input?.title, 200, 'заголовок') || null,
+      question: limitText(input?.question, 1000, 'вопрос') || null,
+      spread_name: limitText(input?.spread_name, 100, 'тип расклада') || null,
+      reading_date: readingDate,
+      status,
+      interpretation: limitText(input?.interpretation, READING_TEXT_MAX, 'трактовка') || null,
+      summary: limitText(input?.summary, READING_TEXT_MAX, 'выводы') || null,
+    },
+    cards,
+  };
+}
+
+const insertReadingCard = db.prepare(`
+  INSERT INTO reading_cards
+    (reading_id, card_id, position_index, position_name, is_reversed, interpretation_id, note)
+  VALUES (?, ?, ?, ?, ?, ?, ?)
+`);
+
+function withTransaction(callback) {
+  db.exec('BEGIN');
+  try {
+    const result = callback();
+    db.exec('COMMIT');
+    return result;
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+function replaceReadingCards(readingId, cards) {
+  db.prepare('DELETE FROM reading_cards WHERE reading_id = ?').run(readingId);
+  for (const card of cards) {
+    insertReadingCard.run(
+      readingId,
+      card.card_id,
+      card.position_index,
+      card.position_name,
+      card.is_reversed,
+      card.interpretation_id ?? null,
+      card.note,
+    );
+  }
+}
+
+function getReadingDetail(id) {
+  const reading = db.prepare(`
+    SELECT r.*, c.name AS client_name
+    FROM readings r
+    LEFT JOIN clients c ON c.id = r.client_id
+    WHERE r.id = ?
+  `).get(id);
+
+  if (!reading) throw httpError('Расклад не найден', 404);
+
+  const cards = db.prepare(`
+    SELECT
+      rc.id AS reading_card_id,
+      rc.position_index,
+      rc.position_name,
+      rc.is_reversed,
+      rc.interpretation_id,
+      rc.note,
+      ci.title AS interpretation_title,
+      ci.body AS interpretation_body,
+      c.id AS card_id,
+      c.slug,
+      c.name_ru,
+      c.name_en,
+      c.image,
+      c.arcana,
+      c.suit,
+      c.upright,
+      c.reversed
+    FROM reading_cards rc
+    JOIN cards c ON c.id = rc.card_id
+    LEFT JOIN card_interpretations ci ON ci.id = rc.interpretation_id
+    WHERE rc.reading_id = ?
+    ORDER BY rc.position_index
+  `).all(id);
+
+  return { ...reading, cards };
+}
+
+/* ---------- Дневник ---------- */
+
+const JOURNAL_SELECT = `
+  SELECT
+    j.*,
+    c.name AS client_name,
+    r.title AS reading_title,
+    r.reading_date AS reading_date,
+    card.name_ru AS card_name_ru,
+    card.name_en AS card_name_en,
+    card.image AS card_image
+  FROM journal j
+  LEFT JOIN clients c ON c.id = j.client_id
+  LEFT JOIN readings r ON r.id = j.reading_id
+  LEFT JOIN cards card ON card.id = j.card_id
+`;
+
+function parseJournalTags(value) {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) {
+      return parsed.map((tag) => String(tag).trim()).filter(Boolean);
+    }
+  } catch {
+    // старые записи могли хранить теги строкой через запятую
+  }
+  return String(value)
+    .split(/[,;]/)
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+}
+
+function normalizeJournalTags(value) {
+  const raw = Array.isArray(value)
+    ? value
+    : String(value ?? '').split(/[,;]/);
+
+  const tags = [];
+  const seen = new Set();
+
+  for (const item of raw) {
+    const tag = String(item ?? '').trim().replace(/^#+/, '').trim();
+    if (!tag) continue;
+    if (tag.length > JOURNAL_TAG_MAX) {
+      throw httpError(`Тег «${tag.slice(0, JOURNAL_TAG_MAX)}…» слишком длинный (максимум ${JOURNAL_TAG_MAX} символов)`, 400);
+    }
+    const key = tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    tags.push(tag);
+  }
+
+  if (tags.length > JOURNAL_TAGS_MAX) {
+    throw httpError(`Слишком много тегов (максимум ${JOURNAL_TAGS_MAX})`, 400);
+  }
+
+  return tags;
+}
+
+function journalReference(value, label, table, notFoundMessage) {
+  if (value === null || value === undefined || value === '') return null;
+  const id = Number(value);
+  if (!Number.isInteger(id) || id <= 0) {
+    throw httpError(`Неверный идентификатор: ${label}`, 400);
+  }
+  if (!db.prepare(`SELECT id FROM ${table} WHERE id = ?`).get(id)) {
+    throw httpError(notFoundMessage, 400);
+  }
+  return id;
+}
+
+function normalizeJournal(input) {
+  const entryDate = String(input?.entry_date ?? '').trim() || todayIso();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(entryDate)) {
+    throw httpError('Дата записи должна быть в формате ГГГГ-ММ-ДД', 400);
+  }
+  const parsedDate = new Date(`${entryDate}T00:00:00Z`);
+  if (Number.isNaN(parsedDate.getTime()) || parsedDate.toISOString().slice(0, 10) !== entryDate) {
+    throw httpError('Такой даты не существует', 400);
+  }
+
+  const title = limitText(input?.title, JOURNAL_TITLE_MAX, 'заголовок') || null;
+  const body = limitText(input?.body, JOURNAL_TEXT_MAX, 'текст записи') || null;
+  if (!title && !body) {
+    throw httpError('Заполните заголовок или текст записи', 400);
+  }
+
+  return {
+    entry_date: entryDate,
+    title,
+    body,
+    card_id: journalReference(input?.card_id, 'карта', 'cards', 'Карта не найдена'),
+    reading_id: journalReference(input?.reading_id, 'расклад', 'readings', 'Расклад не найден'),
+    client_id: journalReference(input?.client_id, 'клиент', 'clients', 'Клиент не найден'),
+    tags: normalizeJournalTags(input?.tags),
+  };
+}
+
+function journalDetail(id) {
+  const row = db.prepare(`${JOURNAL_SELECT} WHERE j.id = ?`).get(id);
+  if (!row) throw httpError('Запись дневника не найдена', 404);
+  return { ...row, tags: parseJournalTags(row.tags) };
+}
+
+function journalHaystack(row) {
+  return [
+    row.title,
+    row.body,
+    row.client_name,
+    row.reading_title,
+    row.card_name_ru,
+    row.card_name_en,
+    ...(row.tags ?? []),
+  ].filter(Boolean).join(' ').toLowerCase();
+}
+
+function getStatistics() {
+  const statusRows = db.prepare('SELECT status, COUNT(*) AS n FROM readings GROUP BY status').all();
+  const statusCounts = { draft: 0, done: 0, archived: 0 };
+  for (const row of statusRows) {
+    statusCounts[row.status] = row.n;
+  }
+
+  const cards = db.prepare(`
+    SELECT
+      c.id,
+      c.name_ru,
+      c.name_en,
+      c.image,
+      c.arcana,
+      c.suit,
+      COUNT(rc.id) AS total,
+      SUM(CASE WHEN rc.is_reversed = 0 THEN 1 ELSE 0 END) AS upright,
+      SUM(CASE WHEN rc.is_reversed = 1 THEN 1 ELSE 0 END) AS reversed
+    FROM reading_cards rc
+    JOIN cards c ON c.id = rc.card_id
+    GROUP BY c.id
+    ORDER BY total DESC, c.name_ru
+  `).all();
+
+  const clients = db.prepare(`
+    SELECT
+      cl.id,
+      cl.name,
+      (SELECT COUNT(*) FROM readings r WHERE r.client_id = cl.id) AS readings,
+      (SELECT COUNT(*) FROM journal j WHERE j.client_id = cl.id) AS journal,
+      (SELECT COUNT(*) FROM reading_cards rc
+         JOIN readings r ON r.id = rc.reading_id
+        WHERE r.client_id = cl.id) AS cards,
+      (SELECT MAX(r.reading_date) FROM readings r WHERE r.client_id = cl.id) AS last_reading
+    FROM clients cl
+    ORDER BY readings DESC, journal DESC, cl.name
+  `).all();
+
+  const themeMap = new Map();
+  const themeRows = db.prepare(`
+    SELECT c.themes, COUNT(rc.id) AS total
+    FROM reading_cards rc
+    JOIN cards c ON c.id = rc.card_id
+    GROUP BY c.id
+  `).all();
+
+  for (const row of themeRows) {
+    const list = safeJson(row.themes);
+    if (!Array.isArray(list)) continue;
+    for (const theme of list) {
+      const label = String(theme ?? '').trim();
+      if (!label) continue;
+      const key = label.toLowerCase();
+      const existing = themeMap.get(key);
+      if (existing) existing.count += row.total;
+      else themeMap.set(key, { theme: label, count: row.total });
+    }
+  }
+
+  const themes = [...themeMap.values()]
+    .sort((a, b) => b.count - a.count || a.theme.localeCompare(b.theme, 'ru'));
+
+  const tagMap = new Map();
+  for (const row of db.prepare('SELECT tags FROM journal').all()) {
+    for (const tag of parseJournalTags(row.tags)) {
+      const key = tag.toLowerCase();
+      const existing = tagMap.get(key);
+      if (existing) existing.count += 1;
+      else tagMap.set(key, { tag, count: 1 });
+    }
+  }
+
+  const journalTags = [...tagMap.values()]
+    .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag, 'ru'));
+
+  const selfReadings = db.prepare('SELECT COUNT(*) AS n FROM readings WHERE client_id IS NULL').get().n;
+
+  return {
+    totals: { ...getStats(), ...statusCounts, selfReadings },
+    cards,
+    clients,
+    themes,
+    journalTags,
+  };
+}
+
+const routes = [
+  ['GET', /^\/api\/health$/, () => ({
+    ok: true,
+    schemaVersion: SCHEMA_VERSION,
+    dbFile,
+    uptime: Math.round(process.uptime()),
+  })],
+
+  ['GET', /^\/api\/stats$/, () => getStats()],
+
+  ['GET', /^\/api\/statistics$/, () => getStatistics()],
+
+  ['GET', /^\/api\/cards$/, (req, url) => {
+    const conditions = [];
+    const params = [];
+
+    const arcana = url.searchParams.get('arcana');
+    if (arcana) {
+      conditions.push('arcana = ?');
+      params.push(arcana);
+    }
+
+    const suit = url.searchParams.get('suit');
+    if (suit) {
+      conditions.push('suit = ?');
+      params.push(suit);
+    }
+
+    const query = url.searchParams.get('q')?.trim().toLowerCase();
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    let cards = db.prepare(`SELECT * FROM cards ${where} ${CARD_ORDER}`).all(...params).map(parseCard);
+    const interpretationMap = interpretationsByCard(cards.map((card) => card.id));
+
+    if (query) {
+      cards = cards.filter((card) => {
+        const personal = (interpretationMap.get(card.id) ?? [])
+          .map((item) => `${item.title ?? ''} ${item.body}`)
+          .join(' ');
+        const haystack = [
+          card.name_ru,
+          card.name_en,
+          card.slug,
+          card.keywords.join(' '),
+          card.notes ?? '',
+          personal,
+        ].join(' ');
+        return haystack.toLowerCase().includes(query);
+      });
+    }
+
+    return cards.map((card) => withInterpretations(card, interpretationMap));
+  }],
+
+  ['GET', /^\/api\/cards\/(\d+)$/, (req, url, match) => {
+    const id = Number(match[1]);
+    const row = db.prepare('SELECT * FROM cards WHERE id = ?').get(id);
+    if (!row) throw httpError('Карта не найдена', 404);
+    return withInterpretations(parseCard(row), interpretationsByCard([id]));
+  }],
+
+  ['PATCH', /^\/api\/cards\/(\d+)$/, async (req, url, match) => {
+    const id = Number(match[1]);
+    const row = db.prepare('SELECT * FROM cards WHERE id = ?').get(id);
+    if (!row) throw httpError('Карта не найдена', 404);
+
+    const body = await readJsonBody(req);
+    const notes = limitText(body?.notes ?? '', 10000, 'Личные заметки');
+
+    db.prepare(`
+      UPDATE cards
+      SET notes = ?,
+          updated_at = datetime('now')
+      WHERE id = ?
+    `).run(notes || null, id);
+
+    const updated = db.prepare('SELECT * FROM cards WHERE id = ?').get(id);
+    return withInterpretations(parseCard(updated), interpretationsByCard([id]));
+  }],
+
+  ['POST', /^\/api\/cards\/(\d+)\/interpretations$/, async (req, url, match) => {
+    const cardId = Number(match[1]);
+    const card = db.prepare('SELECT id FROM cards WHERE id = ?').get(cardId);
+    if (!card) throw httpError('Карта не найдена', 404);
+
+    const data = normalizeInterpretation(await readJsonBody(req));
+    const result = db.prepare(`
+      INSERT INTO card_interpretations (card_id, orientation, title, body)
+      VALUES (?, ?, ?, ?)
+    `).run(cardId, data.orientation, data.title, data.body);
+
+    return db.prepare('SELECT * FROM card_interpretations WHERE id = ?')
+      .get(Number(result.lastInsertRowid));
+  }],
+
+  ['PUT', /^\/api\/interpretations\/(\d+)$/, async (req, url, match) => {
+    const id = Number(match[1]);
+    const row = db.prepare('SELECT * FROM card_interpretations WHERE id = ?').get(id);
+    if (!row) throw httpError('Трактовка не найдена', 404);
+
+    const data = normalizeInterpretation(await readJsonBody(req));
+    db.prepare(`
+      UPDATE card_interpretations
+      SET orientation = ?, title = ?, body = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(data.orientation, data.title, data.body, id);
+
+    return db.prepare('SELECT * FROM card_interpretations WHERE id = ?').get(id);
+  }],
+
+  ['DELETE', /^\/api\/interpretations\/(\d+)$/, (req, url, match) => {
+    const id = Number(match[1]);
+    const result = db.prepare('DELETE FROM card_interpretations WHERE id = ?').run(id);
+    if (result.changes === 0) throw httpError('Трактовка не найдена', 404);
+    return { ok: true, deleted: id };
+  }],
+
+  ['GET', /^\/api\/clients$/, (req, url) => {
+    const query = url.searchParams.get('q')?.trim().toLowerCase();
+    let clients = db.prepare('SELECT * FROM clients ORDER BY name').all();
+
+    if (query) {
+      clients = clients.filter((client) =>
+        `${client.name} ${client.contact ?? ''}`.toLowerCase().includes(query),
+      );
+    }
+
+    return clients;
+  }],
+
+  ['GET', /^\/api\/clients\/(\d+)$/, (req, url, match) => {
+    const id = Number(match[1]);
+    const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(id);
+    if (!client) throw httpError('Клиент не найден', 404);
+
+    const readings = db.prepare(`
+      SELECT id, title, question, spread_name, reading_date, status
+      FROM readings
+      WHERE client_id = ?
+      ORDER BY reading_date DESC, id DESC
+    `).all(id);
+
+    return { ...client, readings };
+  }],
+
+  ['POST', /^\/api\/clients$/, async (req) => {
+    const client = normalizeClient(await readJsonBody(req));
+    const result = db.prepare(`
+      INSERT INTO clients (name, contact, birth_date, notes)
+      VALUES (?, ?, ?, ?)
+    `).run(client.name, client.contact, client.birth_date, client.notes);
+
+    return db.prepare('SELECT * FROM clients WHERE id = ?').get(Number(result.lastInsertRowid));
+  }],
+
+  ['PUT', /^\/api\/clients\/(\d+)$/, async (req, url, match) => {
+    const id = Number(match[1]);
+    const existing = db.prepare('SELECT id FROM clients WHERE id = ?').get(id);
+    if (!existing) throw httpError('Клиент не найден', 404);
+
+    const client = normalizeClient(await readJsonBody(req));
+    db.prepare(`
+      UPDATE clients
+      SET name = ?, contact = ?, birth_date = ?, notes = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(client.name, client.contact, client.birth_date, client.notes, id);
+
+    return db.prepare('SELECT * FROM clients WHERE id = ?').get(id);
+  }],
+
+  ['DELETE', /^\/api\/clients\/(\d+)$/, (req, url, match) => {
+    const id = Number(match[1]);
+    const result = db.prepare('DELETE FROM clients WHERE id = ?').run(id);
+    if (result.changes === 0) throw httpError('Клиент не найден', 404);
+    return { ok: true, deleted: id };
+  }],
+
+  ['GET', /^\/api\/readings$/, (req, url) => {
+    const conditions = [];
+    const params = [];
+
+    const status = url.searchParams.get('status');
+    if (status) {
+      if (!READING_STATUSES.includes(status)) throw httpError('Неизвестный статус расклада', 400);
+      conditions.push('r.status = ?');
+      params.push(status);
+    }
+
+    const clientId = url.searchParams.get('client_id');
+    if (clientId) {
+      conditions.push('r.client_id = ?');
+      params.push(Number(clientId));
+    }
+
+    const from = url.searchParams.get('from');
+    if (from) {
+      conditions.push('r.reading_date >= ?');
+      params.push(from);
+    }
+
+    const to = url.searchParams.get('to');
+    if (to) {
+      conditions.push('r.reading_date <= ?');
+      params.push(to);
+    }
+
+    const query = url.searchParams.get('q')?.trim().toLowerCase();
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    let rows = db.prepare(`
+      SELECT
+        r.*,
+        c.name AS client_name,
+        (SELECT COUNT(*) FROM reading_cards rc WHERE rc.reading_id = r.id) AS cards_count
+      FROM readings r
+      LEFT JOIN clients c ON c.id = r.client_id
+      ${where}
+      ORDER BY r.reading_date DESC, r.id DESC
+    `).all(...params);
+
+    if (query) {
+      rows = rows.filter((row) => {
+        const haystack = [
+          row.title,
+          row.question,
+          row.interpretation,
+          row.summary,
+          row.client_name,
+        ].filter(Boolean).join(' ').toLowerCase();
+        return haystack.includes(query);
+      });
+    }
+
+    return rows;
+  }],
+
+  ['GET', /^\/api\/readings\/(\d+)$/, (req, url, match) => {
+    return getReadingDetail(Number(match[1]));
+  }],
+
+  ['POST', /^\/api\/readings$/, async (req) => {
+    const { reading, cards } = normalizeReading(await readJsonBody(req));
+
+    const id = withTransaction(() => {
+      const result = db.prepare(`
+        INSERT INTO readings (
+          client_id, title, question, spread_name, reading_date,
+          status, interpretation, summary
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        reading.client_id,
+        reading.title,
+        reading.question,
+        reading.spread_name,
+        reading.reading_date,
+        reading.status,
+        reading.interpretation,
+        reading.summary,
+      );
+
+      const readingId = Number(result.lastInsertRowid);
+      replaceReadingCards(readingId, cards);
+      return readingId;
+    });
+
+    return getReadingDetail(id);
+  }],
+
+  ['PUT', /^\/api\/readings\/(\d+)$/, async (req, url, match) => {
+    const id = Number(match[1]);
+    const existing = db.prepare('SELECT id FROM readings WHERE id = ?').get(id);
+    if (!existing) throw httpError('Расклад не найден', 404);
+
+    const { reading, cards } = normalizeReading(await readJsonBody(req));
+
+    withTransaction(() => {
+      db.prepare(`
+        UPDATE readings
+        SET client_id = ?, title = ?, question = ?, spread_name = ?, reading_date = ?,
+            status = ?, interpretation = ?, summary = ?, updated_at = datetime('now')
+        WHERE id = ?
+      `).run(
+        reading.client_id,
+        reading.title,
+        reading.question,
+        reading.spread_name,
+        reading.reading_date,
+        reading.status,
+        reading.interpretation,
+        reading.summary,
+        id,
+      );
+
+      replaceReadingCards(id, cards);
+    });
+
+    return getReadingDetail(id);
+  }],
+
+  ['PATCH', /^\/api\/readings\/(\d+)$/, async (req, url, match) => {
+    const id = Number(match[1]);
+    const row = db.prepare('SELECT * FROM readings WHERE id = ?').get(id);
+    if (!row) throw httpError('Расклад не найден', 404);
+
+    const body = await readJsonBody(req);
+
+    // Меняем только переданные текстовые поля, карты и остальное не трогаем.
+    const interpretation = body?.interpretation === undefined
+      ? row.interpretation
+      : limitText(body.interpretation, READING_TEXT_MAX, 'трактовка') || null;
+    const summary = body?.summary === undefined
+      ? row.summary
+      : limitText(body.summary, READING_TEXT_MAX, 'выводы') || null;
+
+    db.prepare(`
+      UPDATE readings
+      SET interpretation = ?, summary = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(interpretation, summary, id);
+
+    return getReadingDetail(id);
+  }],
+
+  ['DELETE', /^\/api\/readings\/(\d+)$/, (req, url, match) => {
+    const id = Number(match[1]);
+    const result = db.prepare('DELETE FROM readings WHERE id = ?').run(id);
+    if (result.changes === 0) throw httpError('Расклад не найден', 404);
+    return { ok: true, deleted: id };
+  }],
+
+  ['GET', /^\/api\/journal$/, (req, url) => {
+    const conditions = [];
+    const params = [];
+
+    const from = url.searchParams.get('from');
+    if (from) {
+      conditions.push('j.entry_date >= ?');
+      params.push(from);
+    }
+
+    const to = url.searchParams.get('to');
+    if (to) {
+      conditions.push('j.entry_date <= ?');
+      params.push(to);
+    }
+
+    for (const [param, column] of [
+      ['card_id', 'j.card_id'],
+      ['reading_id', 'j.reading_id'],
+      ['client_id', 'j.client_id'],
+    ]) {
+      const raw = url.searchParams.get(param);
+      if (raw) {
+        const value = Number(raw);
+        if (!Number.isInteger(value) || value <= 0) {
+          throw httpError(`Неверный фильтр: ${param}`, 400);
+        }
+        conditions.push(`${column} = ?`);
+        params.push(value);
+      }
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const rows = db.prepare(`${JOURNAL_SELECT} ${where} ORDER BY j.entry_date DESC, j.id DESC`)
+      .all(...params)
+      .map((row) => ({ ...row, tags: parseJournalTags(row.tags) }));
+
+    // Поиск по кириллице надёжнее делать в JS: LIKE в SQLite регистронезависим только для латиницы.
+    const query = url.searchParams.get('q')?.trim().toLowerCase();
+    const tag = url.searchParams.get('tag')?.trim().toLowerCase();
+
+    return rows
+      .filter((row) => (query ? journalHaystack(row).includes(query) : true))
+      .filter((row) => (tag ? row.tags.some((item) => item.toLowerCase() === tag) : true));
+  }],
+
+  ['GET', /^\/api\/journal\/(\d+)$/, (req, url, match) => {
+    return journalDetail(Number(match[1]));
+  }],
+
+  ['POST', /^\/api\/journal$/, async (req) => {
+    const entry = normalizeJournal(await readJsonBody(req));
+
+    const result = db.prepare(`
+      INSERT INTO journal (entry_date, title, body, card_id, reading_id, client_id, tags)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      entry.entry_date,
+      entry.title,
+      entry.body,
+      entry.card_id,
+      entry.reading_id,
+      entry.client_id,
+      entry.tags.length > 0 ? JSON.stringify(entry.tags) : null,
+    );
+
+    return journalDetail(Number(result.lastInsertRowid));
+  }],
+
+  ['PUT', /^\/api\/journal\/(\d+)$/, async (req, url, match) => {
+    const id = Number(match[1]);
+    journalDetail(id);
+
+    const entry = normalizeJournal(await readJsonBody(req));
+
+    db.prepare(`
+      UPDATE journal
+      SET entry_date = ?, title = ?, body = ?, card_id = ?, reading_id = ?, client_id = ?,
+          tags = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(
+      entry.entry_date,
+      entry.title,
+      entry.body,
+      entry.card_id,
+      entry.reading_id,
+      entry.client_id,
+      entry.tags.length > 0 ? JSON.stringify(entry.tags) : null,
+      id,
+    );
+
+    return journalDetail(id);
+  }],
+
+  ['DELETE', /^\/api\/journal\/(\d+)$/, (req, url, match) => {
+    const id = Number(match[1]);
+    const result = db.prepare('DELETE FROM journal WHERE id = ?').run(id);
+    if (result.changes === 0) throw httpError('Запись дневника не найдена', 404);
+    return { ok: true, deleted: id };
+  }],
+];
+
+function sendJson(res, status, data) {
+  const body = JSON.stringify(data);
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'content-length': Buffer.byteLength(body),
+    'cache-control': 'no-store',
+  });
+  res.end(body);
+}
+
+async function serveStatic(res, pathname) {
+  let decoded;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    res.writeHead(400).end('Некорректный адрес');
+    return;
+  }
+
+  const relative = decoded === '/' ? 'index.html' : decoded.replace(/^\/+/, '');
+  const filePath = path.resolve(publicDir, relative);
+
+  if (filePath !== publicDir && !filePath.startsWith(publicDir + path.sep)) {
+    res.writeHead(403).end('Доступ запрещён');
+    return;
+  }
+
+  try {
+    const info = await stat(filePath);
+    if (!info.isFile()) throw new Error('не файл');
+
+    res.writeHead(200, {
+      'content-type': MIME[path.extname(filePath).toLowerCase()] ?? 'application/octet-stream',
+      'content-length': info.size,
+      'cache-control': 'no-cache',
+    });
+    createReadStream(filePath).pipe(res);
+  } catch {
+    res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+    res.end('Не найдено');
+  }
+}
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+  const pathname = url.pathname;
+
+  if (pathname.startsWith('/api/')) {
+    const route = routes.find(([method, pattern]) => {
+      return method === req.method && pattern.test(pathname);
+    });
+    if (!route) {
+      sendJson(res, 404, { error: 'Неизвестный метод API' });
+      return;
+    }
+    try {
+      const match = pathname.match(route[1]);
+      sendJson(res, 200, await route[2](req, url, match));
+    } catch (error) {
+      const status = error?.status ?? 500;
+      if (status === 500) console.error('[api]', error);
+      sendJson(res, status, { error: error?.message ?? String(error) });
+    }
+    return;
+  }
+
+  await serveStatic(res, pathname);
+});
+
+const seeded = seedCards();
+if (seeded.inserted > 0) {
+  console.log(`Справочник карт загружен: ${seeded.inserted} карт`);
+}
+
+server.listen(port, '127.0.0.1', () => {
+  console.log(`Таро-мастерская запущена: http://localhost:${port}`);
+  console.log(`База данных: ${dbFile}`);
+});

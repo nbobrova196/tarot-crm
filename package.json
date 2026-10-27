@@ -1,0 +1,11 @@
+{
+  "name": "tarot-crm",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Рабочее место таролога: расклады, база знаний по картам, клиенты и журнал",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  }
+}

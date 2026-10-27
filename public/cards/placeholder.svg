@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 520" width="300" height="520" role="img" aria-label="Изображение карты недоступно">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#241d33"/>
+      <stop offset="1" stop-color="#161220"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="296" height="516" rx="14" fill="url(#bg)" stroke="#c9a86a" stroke-width="2"/>
+  <rect x="14" y="14" width="272" height="492" rx="8" fill="none" stroke="#c9a86a" stroke-opacity="0.35" stroke-width="1"/>
+  <g fill="none" stroke="#c9a86a" stroke-width="1.2" stroke-opacity="0.55">
+    <circle cx="150" cy="250" r="74"/>
+    <circle cx="150" cy="250" r="52"/>
+  </g>
+  <path d="M150 196 L158 242 L204 250 L158 258 L150 304 L142 258 L96 250 L142 242 Z"
+        fill="#c9a86a" fill-opacity="0.85"/>
+  <text x="150" y="360" text-anchor="middle" font-family="Georgia, serif" font-size="16"
+        fill="#e6d3a8" fill-opacity="0.8">изображение</text>
+  <text x="150" y="382" text-anchor="middle" font-family="Georgia, serif" font-size="16"
+        fill="#e6d3a8" fill-opacity="0.8">недоступно</text>
+</svg>

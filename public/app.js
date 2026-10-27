@@ -1,0 +1,3668 @@
+// Интерфейс: навигация по разделам и отрисовка страниц.
+// Разделы, которые ещё не готовы, показывают заглушки с планом.
+
+const SECTIONS = [
+  {
+    id: 'overview',
+    label: 'Обзор',
+    title: 'Обзор',
+    subtitle: 'Состояние рабочего места',
+  },
+  {
+    id: 'cards',
+    label: 'Карты',
+    title: 'База знаний',
+    subtitle: 'Значения карт и личные трактовки',
+  },
+  {
+    id: 'readings',
+    label: 'Расклады',
+    title: 'Расклады',
+    subtitle: 'История раскладов и клиентских вопросов',
+  },
+  {
+    id: 'clients',
+    label: 'Клиенты',
+    title: 'Клиенты',
+    subtitle: 'Карточки и история обращений',
+  },
+  {
+    id: 'journal',
+    label: 'Дневник',
+    title: 'Дневник',
+    subtitle: 'Наблюдения, карта дня, заметки',
+  },
+  {
+    id: 'search',
+    label: 'Поиск',
+    title: 'Поиск и статистика',
+    subtitle: 'Найти нужное и увидеть закономерности',
+  },
+];
+
+const TILES = [
+  { key: 'readings', label: 'Расклады' },
+  { key: 'clients', label: 'Клиенты' },
+  { key: 'cards', label: 'Карты в базе' },
+  { key: 'journal', label: 'Записи дневника' },
+];
+
+const SUITS = {
+  wands: 'Жезлы',
+  cups: 'Кубки',
+  swords: 'Мечи',
+  pentacles: 'Пентакли',
+};
+
+const CARD_FILTERS = [
+  { id: 'all', label: 'Все' },
+  { id: 'major', label: 'Старшие арканы' },
+  { id: 'wands', label: 'Жезлы' },
+  { id: 'cups', label: 'Кубки' },
+  { id: 'swords', label: 'Мечи' },
+  { id: 'pentacles', label: 'Пентакли' },
+];
+
+const READING_STATUS_LABELS = {
+  draft: 'черновик',
+  done: 'завершён',
+  archived: 'архив',
+};
+
+const READING_STATUS_FILTERS = [
+  { id: 'all', label: 'Все' },
+  { id: 'draft', label: 'Черновики' },
+  { id: 'done', label: 'Завершённые' },
+  { id: 'archived', label: 'Архив' },
+];
+
+const TRIPLETS = [
+  {
+    name: '3 карты: прошлое–настоящее–будущее',
+    positions: ['Прошлое', 'Настоящее', 'Будущее'],
+  },
+  {
+    name: '3 карты: что придёт–как разовьётся–к чему приведёт',
+    positions: ['Что придёт', 'Как разовьётся', 'К чему приведёт'],
+  },
+  {
+    name: '3 карты: ситуация–препятствие–совет',
+    positions: ['Ситуация', 'Препятствие', 'Совет'],
+  },
+  {
+    name: '3 карты: причина–развитие–итог',
+    positions: ['Причина', 'Развитие', 'Итог'],
+  },
+];
+
+const SPREAD_TYPES = [
+  '1 карта',
+  ...TRIPLETS.map((triplet) => triplet.name),
+  'Кельтский крест',
+];
+
+const SPREAD_POSITIONS = {
+  '1 карта': ['Карта'],
+  ...Object.fromEntries(TRIPLETS.map((triplet) => [triplet.name, triplet.positions])),
+  'Кельтский крест': [
+    'Суть вопроса',
+    'Пересечение',
+    'Основа',
+    'Недавнее прошлое',
+    'Цель',
+    'Ближайшее будущее',
+    'Позиция спрашивающего',
+    'Окружение',
+    'Надежды и страхи',
+    'Итог',
+  ],
+};
+
+const navEl = document.getElementById('nav');
+const viewEl = document.getElementById('view');
+const titleEl = document.getElementById('page-title');
+const subtitleEl = document.getElementById('page-subtitle');
+
+let cardsCache = null;
+
+function renderNav(activeId) {
+  navEl.innerHTML = SECTIONS.map((section) => `
+    <a class="nav-item${section.id === activeId ? ' is-active' : ''}" href="#/${section.id}">
+      <span class="nav-mark" aria-hidden="true"></span>
+      <span>${section.label}</span>
+    </a>
+  `).join('');
+}
+
+function plural(count, forms) {
+  const abs = Math.abs(count) % 100;
+  const last = abs % 10;
+  if (abs > 10 && abs < 20) return forms[2];
+  if (last === 1) return forms[0];
+  if (last >= 2 && last <= 4) return forms[1];
+  return forms[2];
+}
+
+async function api(pathname, options = {}) {
+  const response = await fetch(pathname, {
+    headers: options.body ? { 'content-type': 'application/json' } : undefined,
+    ...options,
+  });
+
+  let data = null;
+  try {
+    data = await response.json();
+  } catch {
+    // тело может быть пустым — не считаем это ошибкой
+  }
+
+  if (!response.ok) {
+    throw new Error(data?.error ?? `Ошибка запроса (${response.status})`);
+  }
+  return data;
+}
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (symbol) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[symbol]));
+}
+
+function formatDate(value) {
+  if (!value) return '';
+  const datePart = String(value).slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(datePart)) {
+    const [year, month, day] = datePart.split('-');
+    return `${day}.${month}.${year}`;
+  }
+  return String(value);
+}
+
+function todayIso() {
+  const now = new Date();
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+
+/* ---------- Выпадающие списки ---------- */
+
+let activeCustomSelect = null;
+
+function customSelectOptionHtml(option, select) {
+  const selected = option.index === select.selectedIndex;
+  return `
+    <button type="button" class="custom-select-option${selected ? ' is-selected' : ''}"
+            role="option" aria-selected="${selected}" data-option-index="${option.index}"
+            ${option.disabled ? 'disabled' : ''}>
+      ${escapeHtml(option.textContent.trim())}
+    </button>
+  `;
+}
+
+function customSelectMenuHtml(select) {
+  const items = [];
+  for (const child of select.children) {
+    if (child.tagName === 'OPTGROUP') {
+      items.push(`<div class="custom-select-group" role="presentation">${escapeHtml(child.label)}</div>`);
+      for (const option of child.children) {
+        if (option.tagName === 'OPTION') items.push(customSelectOptionHtml(option, select));
+      }
+    } else if (child.tagName === 'OPTION') {
+      items.push(customSelectOptionHtml(child, select));
+    }
+  }
+  return items.join('');
+}
+
+function syncCustomSelect(select) {
+  const wrapper = select.closest('.custom-select');
+  if (!wrapper) return;
+
+  const option = select.options[select.selectedIndex];
+  const label = wrapper.querySelector('.custom-select-label');
+  if (label) label.textContent = option ? option.textContent.trim() : '';
+  wrapper.classList.toggle('is-active', select.classList.contains('is-active'));
+
+  for (const item of wrapper.querySelectorAll('.custom-select-option')) {
+    const isSelected = Number(item.dataset.optionIndex) === select.selectedIndex;
+    item.classList.toggle('is-selected', isSelected);
+    item.setAttribute('aria-selected', String(isSelected));
+  }
+}
+
+function setSelectValue(select, value) {
+  if (!select) return;
+  select.value = value;
+  syncCustomSelect(select);
+}
+
+function setSelectActive(select, active) {
+  if (!select) return;
+  select.classList.toggle('is-active', active);
+  select.closest('.custom-select')?.classList.toggle('is-active', active);
+}
+
+function closeCustomSelect(wrapper = activeCustomSelect) {
+  if (!wrapper) return;
+  wrapper.classList.remove('is-open');
+  wrapper.querySelector('.custom-select-trigger')?.setAttribute('aria-expanded', 'false');
+  if (activeCustomSelect === wrapper) activeCustomSelect = null;
+}
+
+function positionCustomSelectMenu(wrapper) {
+  const trigger = wrapper.querySelector('.custom-select-trigger');
+  const menu = wrapper.querySelector('.custom-select-menu');
+  if (!trigger || !menu) return;
+
+  menu.classList.remove('is-up', 'is-right');
+  const rect = trigger.getBoundingClientRect();
+  const menuHeight = Math.min(menu.scrollHeight, 300);
+  const menuWidth = Math.min(Math.max(rect.width, 220), 320);
+
+  if (rect.bottom + menuHeight + 12 > window.innerHeight && rect.top > menuHeight + 12) {
+    menu.classList.add('is-up');
+  }
+  if (rect.left + menuWidth + 12 > window.innerWidth) {
+    menu.classList.add('is-right');
+  }
+}
+
+function openCustomSelectMenu(wrapper) {
+  if (activeCustomSelect && activeCustomSelect !== wrapper) closeCustomSelect(activeCustomSelect);
+  if (!document.contains(wrapper)) return;
+
+  wrapper.classList.add('is-open');
+  wrapper.querySelector('.custom-select-trigger')?.setAttribute('aria-expanded', 'true');
+  activeCustomSelect = wrapper;
+  positionCustomSelectMenu(wrapper);
+
+  const selected = wrapper.querySelector('.custom-select-option.is-selected');
+  selected?.scrollIntoView({ block: 'nearest' });
+}
+
+function enhanceSelects(root = document) {
+  for (const select of root.querySelectorAll('select:not([data-custom-ready])')) {
+    if (select.dataset.customReady) continue;
+    select.dataset.customReady = '1';
+
+    const isChip = select.classList.contains('chip-select');
+    const isBlock = Boolean(select.closest('.form')) || select.classList.contains('interp-pick');
+    const isInterp = select.classList.contains('interp-pick');
+
+    const wrapper = document.createElement('span');
+    wrapper.className = 'custom-select';
+    if (isChip) wrapper.classList.add('custom-select--chip');
+    if (isBlock) wrapper.classList.add('custom-select--block');
+    if (isInterp) wrapper.classList.add('custom-select--interp');
+
+    select.parentNode.insertBefore(wrapper, select);
+
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'custom-select-trigger';
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-expanded', 'false');
+    trigger.setAttribute('aria-label', select.getAttribute('aria-label') || select.name || 'Выпадающий список');
+    trigger.innerHTML = `
+      <span class="custom-select-label"></span>
+      <span class="custom-select-arrow" aria-hidden="true"></span>
+    `;
+
+    const menu = document.createElement('div');
+    menu.className = 'custom-select-menu';
+    menu.setAttribute('role', 'listbox');
+    menu.innerHTML = customSelectMenuHtml(select);
+
+    wrapper.appendChild(trigger);
+    wrapper.appendChild(menu);
+    wrapper.appendChild(select);
+    select.hidden = true;
+    select.tabIndex = -1;
+
+    trigger.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (wrapper.classList.contains('is-open')) closeCustomSelect(wrapper);
+      else openCustomSelectMenu(wrapper);
+    });
+
+    trigger.addEventListener('keydown', (event) => {
+      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+      event.preventDefault();
+      openCustomSelectMenu(wrapper);
+      const options = [...menu.querySelectorAll('.custom-select-option:not(:disabled)')];
+      const selected = options.find((option) => option.classList.contains('is-selected')) ?? options[0];
+      selected?.focus();
+    });
+
+    menu.addEventListener('click', (event) => {
+      const option = event.target.closest('.custom-select-option');
+      if (!option || option.disabled) return;
+      event.preventDefault();
+      event.stopPropagation();
+
+      select.selectedIndex = Number(option.dataset.optionIndex);
+      syncCustomSelect(select);
+      closeCustomSelect(wrapper);
+      trigger.focus();
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      select.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    menu.addEventListener('keydown', (event) => {
+      const options = [...menu.querySelectorAll('.custom-select-option:not(:disabled)')];
+      const currentIndex = options.indexOf(document.activeElement);
+
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const nextIndex = event.key === 'ArrowDown'
+          ? Math.min(options.length - 1, currentIndex + 1)
+          : Math.max(0, currentIndex - 1);
+        options[nextIndex]?.focus();
+      } else if (event.key === 'Home' || event.key === 'End') {
+        event.preventDefault();
+        options[event.key === 'Home' ? 0 : options.length - 1]?.focus();
+      } else if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        if (document.activeElement?.classList.contains('custom-select-option')) {
+          document.activeElement.click();
+        }
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        closeCustomSelect(wrapper);
+        trigger.focus();
+      } else if (event.key === 'Tab') {
+        closeCustomSelect(wrapper);
+      }
+    });
+
+    select.addEventListener('change', () => syncCustomSelect(select));
+    syncCustomSelect(select);
+  }
+}
+
+document.addEventListener('click', (event) => {
+  if (activeCustomSelect && !activeCustomSelect.contains(event.target)) {
+    closeCustomSelect(activeCustomSelect);
+  }
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || !activeCustomSelect) return;
+  const wrapper = activeCustomSelect;
+  closeCustomSelect(wrapper);
+  wrapper.querySelector('.custom-select-trigger')?.focus();
+});
+
+/* ---------- Обзор ---------- */
+
+function statTile(tile) {
+  return `
+    <div class="stat">
+      <div class="stat-value" data-stat="${tile.key}">—</div>
+      <div class="stat-label">${tile.label}</div>
+    </div>
+  `;
+}
+
+async function renderOverview() {
+  viewEl.innerHTML = `
+    <div class="stats">${TILES.map(statTile).join('')}</div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Последние расклады</h2>
+        <a class="panel-link" href="#/readings">все расклады →</a>
+      </div>
+      <div class="latest-readings" id="latest-readings"><p class="muted">Загрузка…</p></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Последние записи</h2>
+        <a class="panel-link" href="#/journal">весь дневник →</a>
+      </div>
+      <div class="latest-readings" id="latest-journal"><p class="muted">Загрузка…</p></div>
+    </div>
+
+    <div class="panel">
+      <h2>Как идёт работа</h2>
+      <ol class="roadmap">
+        <li class="is-done">
+          <span class="roadmap-step">Шаг 1</span>
+          <span class="roadmap-text">Фундамент: сервер, база данных, навигация</span>
+          <span class="roadmap-badge">готово</span>
+        </li>
+        <li class="is-done">
+          <span class="roadmap-step">Шаг 2</span>
+          <span class="roadmap-text">Справочник 78 карт с изображениями</span>
+          <span class="roadmap-badge">готово</span>
+        </li>
+        <li class="is-done">
+          <span class="roadmap-step">Шаг 3</span>
+          <span class="roadmap-text">Клиенты</span>
+          <span class="roadmap-badge">готово</span>
+        </li>
+        <li class="is-done">
+          <span class="roadmap-step">Шаг 4</span>
+          <span class="roadmap-text">Расклады с картами и трактовкой</span>
+          <span class="roadmap-badge">готово</span>
+        </li>
+        <li class="is-done">
+          <span class="roadmap-step">Шаг 5</span>
+          <span class="roadmap-text">Свои трактовки в базе знаний</span>
+          <span class="roadmap-badge">готово</span>
+        </li>
+        <li class="is-done">
+          <span class="roadmap-step">Шаг 6</span>
+          <span class="roadmap-text">Дневник</span>
+          <span class="roadmap-badge">готово</span>
+        </li>
+        <li class="is-done">
+          <span class="roadmap-step">Шаг 7</span>
+          <span class="roadmap-text">Поиск и статистика</span>
+          <span class="roadmap-badge">готово</span>
+        </li>
+      </ol>
+    </div>
+  `;
+
+  try {
+    const [statsResponse, readingsResponse, journalResponse] = await Promise.all([
+      fetch('/api/stats'),
+      fetch('/api/readings'),
+      fetch('/api/journal'),
+    ]);
+    if (!statsResponse.ok) throw new Error(`HTTP ${statsResponse.status}`);
+
+    const stats = await statsResponse.json();
+    for (const tile of TILES) {
+      const node = viewEl.querySelector(`[data-stat="${tile.key}"]`);
+      if (node) node.textContent = stats[tile.key] ?? 0;
+    }
+
+    const host = document.getElementById('latest-readings');
+    const readings = readingsResponse.ok ? await readingsResponse.json() : [];
+    const latest = readings.slice(0, 5);
+
+    host.innerHTML = latest.length === 0
+      ? '<div class="empty">Раскладов пока нет. <a href="#/readings/new">Создать первый</a></div>'
+      : latest.map((reading) => `
+          <a class="list-row" href="#/readings/${reading.id}">
+            <div class="list-main">
+              <div class="list-title">${escapeHtml(reading.title || reading.question || 'Расклад')}</div>
+              <div class="list-sub">${formatDate(reading.reading_date)} · ${escapeHtml(reading.client_name || 'для себя')}${reading.spread_name ? ` · ${escapeHtml(reading.spread_name)}` : ''}</div>
+            </div>
+            <span class="status-badge status-${reading.status}">${READING_STATUS_LABELS[reading.status] ?? reading.status}</span>
+          </a>
+        `).join('');
+
+    const journalHost = document.getElementById('latest-journal');
+    const entries = journalResponse.ok ? await journalResponse.json() : [];
+    const latestEntries = entries.slice(0, 3);
+
+    journalHost.innerHTML = latestEntries.length === 0
+      ? '<div class="empty">Записей пока нет. <a href="#/journal/new">Добавить первую</a></div>'
+      : latestEntries.map((entry) => `
+          <a class="list-row" href="#/journal/${entry.id}">
+            <div class="list-main">
+              <div class="list-title">${escapeHtml(journalTitle(entry))}</div>
+              <div class="list-sub">${formatLongDate(entry.entry_date)}${entry.tags?.length ? ` · ${entry.tags.map((tag) => `#${escapeHtml(tag)}`).join(' ')}` : ''}</div>
+            </div>
+          </a>
+        `).join('');
+  } catch (error) {
+    console.error('Не удалось загрузить статистику:', error);
+  }
+}
+
+/* ---------- Карты ---------- */
+
+async function getCards() {
+  if (!cardsCache) {
+    const response = await fetch('/api/cards');
+    if (!response.ok) throw new Error('Не удалось загрузить справочник карт');
+    cardsCache = await response.json();
+  }
+  return cardsCache;
+}
+
+function cardTile(card) {
+  return `
+    <a class="card-tile" href="#/cards/${card.id}">
+      <div class="card-image">
+        <img src="${card.image}" alt="${card.name_ru}" loading="lazy"
+             onerror="this.onerror=null;this.src='cards/placeholder.svg'">
+        ${card.has_personal ? '<span class="card-personal-dot" title="Есть моя трактовка или заметки"></span>' : ''}
+      </div>
+      <div class="card-tile-name">${card.name_ru}</div>
+      <div class="card-tile-sub">${card.name_en}</div>
+    </a>
+  `;
+}
+
+async function renderCards() {
+  viewEl.innerHTML = `
+    <div class="cards-toolbar">
+      <div class="chips" id="card-filters">
+        ${CARD_FILTERS.map((filter, index) => `
+          <button type="button" class="chip${index === 0 ? ' is-active' : ''}" data-filter="${filter.id}">
+            ${filter.label}
+          </button>
+        `).join('')}
+      </div>
+      <input class="search" id="card-search" type="search" autocomplete="off"
+             placeholder="Поиск по названию или ключевому слову">
+      <button class="btn btn-small reset-filters" type="button" id="cards-reset" hidden>Сбросить фильтры</button>
+    </div>
+    <p class="result-count muted" id="cards-count"></p>
+    <div class="cards-grid" id="cards-grid"><p class="muted">Загрузка…</p></div>
+  `;
+
+  const grid = document.getElementById('cards-grid');
+  const counter = document.getElementById('cards-count');
+
+  let cards;
+  try {
+    cards = await getCards();
+  } catch (error) {
+    grid.innerHTML = `<p class="muted">${error.message}</p>`;
+    return;
+  }
+
+  const state = { filter: 'all', query: '' };
+  const resetButton = document.getElementById('cards-reset');
+
+  function paint() {
+    const query = state.query.trim().toLowerCase();
+    resetButton.hidden = state.filter === 'all' && !state.query.trim();
+    const list = cards.filter((card) => {
+      if (state.filter === 'major' && card.arcana !== 'major') return false;
+      if (state.filter !== 'all' && state.filter !== 'major' && card.suit !== state.filter) return false;
+      if (!query) return true;
+      const personal = (card.interpretations ?? [])
+        .map((item) => `${item.title ?? ''} ${item.body}`)
+        .join(' ');
+      const haystack = [
+        card.name_ru,
+        card.name_en,
+        (card.keywords ?? []).join(' '),
+        card.notes ?? '',
+        personal,
+      ].join(' ').toLowerCase();
+      return haystack.includes(query);
+    });
+
+    grid.innerHTML = list.length > 0
+      ? list.map(cardTile).join('')
+      : '<p class="muted">Ничего не найдено. Попробуйте другое слово или фильтр.</p>';
+
+    counter.textContent = `${list.length} ${plural(list.length, ['карта', 'карты', 'карт'])}`;
+  }
+
+  document.getElementById('card-filters').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-filter]');
+    if (!button) return;
+    state.filter = button.dataset.filter;
+    for (const chip of document.querySelectorAll('#card-filters .chip')) {
+      chip.classList.toggle('is-active', chip === button);
+    }
+    paint();
+  });
+
+  const search = document.getElementById('card-search');
+  search.addEventListener('input', () => {
+    state.query = search.value;
+    paint();
+  });
+
+  resetButton.addEventListener('click', () => {
+    state.filter = 'all';
+    state.query = '';
+    search.value = '';
+    for (const chip of document.querySelectorAll('#card-filters .chip')) {
+      chip.classList.toggle('is-active', chip.dataset.filter === 'all');
+    }
+    paint();
+  });
+
+  paint();
+}
+
+async function renderCardDetail(id) {
+  viewEl.innerHTML = '<p class="muted">Загрузка карты…</p>';
+
+  let card;
+  try {
+    card = await api(`/api/cards/${encodeURIComponent(id)}`);
+  } catch (error) {
+    viewEl.innerHTML = `
+      <div class="panel">
+        <p>${escapeHtml(error.message)}</p>
+        <p class="hint"><a href="#/cards">← ко всем картам</a></p>
+      </div>
+    `;
+    return;
+  }
+
+  titleEl.textContent = card.name_ru;
+  subtitleEl.textContent = card.name_en;
+  document.title = `${card.name_ru} · Таро`;
+
+  const meta = [
+    card.arcana === 'major' ? 'Старший аркан' : SUITS[card.suit] ?? 'Младший аркан',
+    card.element ? `Стихия: ${card.element.toLowerCase()}` : null,
+    card.astrology ? `Астрология: ${card.astrology}` : null,
+  ].filter(Boolean);
+
+  const notes = (card.notes ?? '').trim();
+  const interpretations = card.interpretations ?? [];
+
+  const interpRow = (item) => `
+    <div class="interp-item">
+      <div class="interp-head">
+        <span class="interp-orientation ${item.orientation}">
+          ${item.orientation === 'upright' ? 'прямое' : 'перевёрнутое'}
+        </span>
+        ${item.title ? `<span class="interp-title">${escapeHtml(item.title)}</span>` : ''}
+      </div>
+      <div class="interp-body">${escapeHtml(item.body)}</div>
+    </div>
+  `;
+
+  viewEl.innerHTML = `
+    <a class="back-link" href="#/cards">← все карты</a>
+
+    <div class="card-detail">
+      <figure class="card-detail-image">
+        <img src="${card.image}" alt="${card.name_ru}"
+             onerror="this.onerror=null;this.src='cards/placeholder.svg'">
+      </figure>
+
+      <div class="card-detail-body">
+        <div class="meta-row">
+          ${meta.map((item) => `<span class="meta-chip">${item}</span>`).join('')}
+        </div>
+
+        <div class="keywords">
+          ${(card.keywords ?? []).map((word) => `<span class="keyword">${word}</span>`).join('')}
+        </div>
+
+        <section class="meaning">
+          <h3>Прямое положение</h3>
+          <p>${escapeHtml(card.upright ?? '')}</p>
+        </section>
+
+        <section class="meaning is-reversed">
+          <h3>Перевёрнутое положение</h3>
+          <p>${escapeHtml(card.reversed ?? '')}</p>
+        </section>
+
+        <div class="themes-row">
+          <span class="muted">Темы:</span>
+          ${(card.themes ?? []).map((theme) => `<span class="theme">${theme}</span>`).join('')}
+        </div>
+
+        <div class="card-detail-actions">
+          <a class="btn" href="#/cards/${card.id}/edit">
+            ${interpretations.length > 0 ? `Мои трактовки (${interpretations.length})` : 'Добавить свою трактовку'}
+          </a>
+          <a class="btn" href="#/journal/new?card=${card.id}">Запись в дневник</a>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Мои трактовки</h2>
+        <a class="panel-link" href="#/cards/${card.id}/edit">добавить или изменить →</a>
+      </div>
+      ${interpretations.length > 0
+        ? `<div class="interp-list">${interpretations.map(interpRow).join('')}</div>`
+        : '<p class="muted notes-empty">Своих трактовок пока нет — выше исходные тексты из справочника.</p>'}
+    </div>
+
+    ${notes
+      ? `<div class="panel">
+           <h2>Личные заметки</h2>
+           <div class="notes">${escapeHtml(notes)}</div>
+         </div>`
+      : ''}
+  `;
+}
+
+async function renderCardEdit(id) {
+  viewEl.innerHTML = '<p class="muted">Загрузка карты…</p>';
+
+  let card;
+  try {
+    card = await api(`/api/cards/${encodeURIComponent(id)}`);
+  } catch (error) {
+    viewEl.innerHTML = `
+      <div class="panel">
+        <p>${escapeHtml(error.message)}</p>
+        <p class="hint"><a href="#/cards">← ко всем картам</a></p>
+      </div>
+    `;
+    return;
+  }
+
+  titleEl.textContent = 'Мои трактовки';
+  subtitleEl.textContent = `${card.name_ru} (${card.name_en})`;
+  document.title = `Мои трактовки: ${card.name_ru} · Таро`;
+
+  // null — форма закрыта; иначе черновик формы (id = null для новой записи).
+  let formState = null;
+
+  viewEl.innerHTML = `
+    <a class="back-link" href="#/cards/${card.id}">← к карте</a>
+
+    <div class="panel">
+      <div class="card-edit-head">
+        <span class="card-edit-thumb">
+          <img src="${card.image}" alt="" loading="lazy"
+               onerror="this.onerror=null;this.src='cards/placeholder.svg'">
+        </span>
+        <div>
+          <div class="card-edit-name">${escapeHtml(card.name_ru)}</div>
+          <div class="muted card-edit-en">${escapeHtml(card.name_en)}</div>
+        </div>
+      </div>
+
+      <h2 class="section-title">Исходные тексты</h2>
+      <details class="original-text">
+        <summary>Прямое положение</summary>
+        <p>${escapeHtml(card.upright ?? '')}</p>
+      </details>
+      <details class="original-text">
+        <summary>Перевёрнутое положение</summary>
+        <p>${escapeHtml(card.reversed ?? '')}</p>
+      </details>
+      <p class="field-hint muted original-note">Исходные тексты не меняются — свои трактовки добавляются ниже.</p>
+    </div>
+
+    <div class="panel" id="interp-panel"></div>
+
+    <form class="form panel" id="notes-form" novalidate>
+      <h2 class="section-title">Личные заметки</h2>
+      <label>Заметки к карте
+        <textarea name="notes" rows="5" maxlength="10000"
+                  placeholder="Наблюдения, свои ассоциации, как карта проявлялась в раскладах">${escapeHtml(card.notes ?? '')}</textarea>
+      </label>
+      <p class="form-error" id="notes-error"></p>
+      <p class="form-ok" id="notes-ok" hidden></p>
+      <div class="form-actions">
+        <button class="btn btn-primary" type="submit">Сохранить заметки</button>
+      </div>
+    </form>
+  `;
+
+  const panel = document.getElementById('interp-panel');
+
+  function interpRow(item) {
+    return `
+      <div class="interp-item">
+        <div class="interp-head">
+          <span class="interp-orientation ${item.orientation}">
+            ${item.orientation === 'upright' ? 'прямое' : 'перевёрнутое'}
+          </span>
+          ${item.title ? `<span class="interp-title">${escapeHtml(item.title)}</span>` : ''}
+          <span class="interp-actions">
+            <button class="icon-btn" type="button" data-action="edit" data-id="${item.id}"
+                    title="Изменить">✎</button>
+            <button class="icon-btn danger" type="button" data-action="delete" data-id="${item.id}"
+                    title="Удалить">×</button>
+          </span>
+        </div>
+        <div class="interp-body">${escapeHtml(item.body)}</div>
+      </div>
+    `;
+  }
+
+  function paintInterps() {
+    const list = card.interpretations ?? [];
+
+    const formHtml = formState ? `
+      <form class="form interp-form" id="interp-form" novalidate>
+        <div class="form-row">
+          <label>Положение
+            <select name="orientation">
+              <option value="upright"${formState.orientation === 'upright' ? ' selected' : ''}>Прямое</option>
+              <option value="reversed"${formState.orientation === 'reversed' ? ' selected' : ''}>Перевёрнутое</option>
+            </select>
+          </label>
+          <label>Название <span class="muted">(необязательно)</span>
+            <input name="title" maxlength="200" value="${escapeHtml(formState.title)}"
+                   placeholder="Например: для работы">
+          </label>
+        </div>
+        <label>Трактовка
+          <textarea name="body" rows="5" maxlength="1000"
+                    placeholder="Как вы читаете эту карту в этом положении">${escapeHtml(formState.body)}</textarea>
+        </label>
+        <p class="field-hint muted">Максимум 1000 символов.</p>
+        <p class="form-error" id="interp-error"></p>
+        <div class="form-actions">
+          <button class="btn btn-primary" type="submit">${formState.id ? 'Сохранить изменения' : 'Добавить'}</button>
+          <button class="btn" type="button" data-action="cancel">Отмена</button>
+        </div>
+      </form>
+    ` : '';
+
+    panel.innerHTML = `
+      <div class="panel-head">
+        <h2>Мои трактовки</h2>
+        ${formState ? '' : '<button class="btn" type="button" data-action="add">Добавить трактовку</button>'}
+      </div>
+      ${formHtml}
+      ${list.length > 0
+        ? `<div class="interp-list">${list.map(interpRow).join('')}</div>`
+        : '<p class="muted notes-empty">Пока нет своих трактовок. Исходные тексты — выше.</p>'}
+    `;
+    enhanceSelects(panel);
+  }
+
+  async function reloadCard() {
+    card = await api(`/api/cards/${card.id}`);
+    formState = null;
+    cardsCache = null;
+    paintInterps();
+  }
+
+  panel.addEventListener('click', async (event) => {
+    const button = event.target.closest('[data-action]');
+    if (!button) return;
+    const action = button.dataset.action;
+
+    if (action === 'add') {
+      formState = { id: null, orientation: 'upright', title: '', body: '' };
+      paintInterps();
+      document.querySelector('#interp-form textarea')?.focus();
+      return;
+    }
+
+    if (action === 'cancel') {
+      formState = null;
+      paintInterps();
+      return;
+    }
+
+    if (action === 'edit') {
+      const item = (card.interpretations ?? []).find(
+        (row) => row.id === Number(button.dataset.id),
+      );
+      if (!item) return;
+      formState = {
+        id: item.id,
+        orientation: item.orientation,
+        title: item.title ?? '',
+        body: item.body,
+      };
+      paintInterps();
+      document.querySelector('#interp-form textarea')?.focus();
+      return;
+    }
+
+    if (action === 'delete') {
+      const item = (card.interpretations ?? []).find(
+        (row) => row.id === Number(button.dataset.id),
+      );
+      if (!item) return;
+      if (!confirm('Удалить эту трактовку? Исходный текст карты останется.')) return;
+
+      try {
+        await api(`/api/interpretations/${item.id}`, { method: 'DELETE' });
+        await reloadCard();
+      } catch (error) {
+        alert(error.message);
+      }
+    }
+  });
+
+  panel.addEventListener('submit', async (event) => {
+    const form = event.target.closest('#interp-form');
+    if (!form) return;
+    event.preventDefault();
+
+    const errorEl = document.getElementById('interp-error');
+    errorEl.textContent = '';
+
+    const data = new FormData(form);
+    const payload = {
+      orientation: data.get('orientation'),
+      title: data.get('title'),
+      body: data.get('body'),
+    };
+
+    const submit = form.querySelector('button[type="submit"]');
+    submit.disabled = true;
+
+    try {
+      if (formState?.id) {
+        await api(`/api/interpretations/${formState.id}`, {
+          method: 'PUT',
+          body: JSON.stringify(payload),
+        });
+      } else {
+        await api(`/api/cards/${card.id}/interpretations`, {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        });
+      }
+      await reloadCard();
+    } catch (error) {
+      errorEl.textContent = error.message;
+      submit.disabled = false;
+    }
+  });
+
+  const notesForm = document.getElementById('notes-form');
+  notesForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+
+    const errorEl = document.getElementById('notes-error');
+    const okEl = document.getElementById('notes-ok');
+    const submit = notesForm.querySelector('button[type="submit"]');
+    errorEl.textContent = '';
+    okEl.hidden = true;
+    submit.disabled = true;
+
+    try {
+      const updated = await api(`/api/cards/${card.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ notes: new FormData(notesForm).get('notes') }),
+      });
+      card = updated;
+      cardsCache = null;
+      okEl.textContent = 'Заметки сохранены';
+      okEl.hidden = false;
+    } catch (error) {
+      errorEl.textContent = error.message;
+    } finally {
+      submit.disabled = false;
+    }
+  });
+
+  paintInterps();
+}
+
+/* ---------- Клиенты ---------- */
+
+async function renderClients() {
+  viewEl.innerHTML = `
+    <div class="cards-toolbar">
+      <input class="search" id="client-search" type="search" autocomplete="off"
+             placeholder="Поиск по имени или контакту">
+      <button class="btn btn-small reset-filters" type="button" id="clients-reset" hidden>Сбросить фильтры</button>
+      <a class="btn btn-primary" href="#/clients/new">Добавить клиента</a>
+    </div>
+    <p class="result-count muted" id="clients-count"></p>
+    <div class="panel list-panel" id="clients-list"><p class="muted">Загрузка…</p></div>
+  `;
+
+  const list = document.getElementById('clients-list');
+  const counter = document.getElementById('clients-count');
+
+  let clients;
+  try {
+    clients = await api('/api/clients');
+  } catch (error) {
+    list.innerHTML = `<p class="muted">${escapeHtml(error.message)}</p>`;
+    return;
+  }
+
+  const state = { query: '' };
+  const resetButton = document.getElementById('clients-reset');
+
+  function paint() {
+    const query = state.query.trim().toLowerCase();
+    resetButton.hidden = !state.query.trim();
+    const visible = clients.filter((client) => {
+      if (!query) return true;
+      return `${client.name} ${client.contact ?? ''}`.toLowerCase().includes(query);
+    });
+
+    counter.textContent = `${visible.length} ${plural(visible.length, ['клиент', 'клиента', 'клиентов'])}`;
+
+    if (visible.length === 0) {
+      list.innerHTML = query
+        ? '<div class="empty">Никого не нашли. Попробуйте другое слово.</div>'
+        : '<div class="empty">Пока ни одного клиента.<br><a href="#/clients/new">Добавить первого</a></div>';
+      return;
+    }
+
+    list.innerHTML = visible.map((client) => {
+      const details = [
+        client.contact,
+        client.birth_date ? `д.р. ${formatDate(client.birth_date)}` : null,
+      ].filter(Boolean).map(escapeHtml).join(' · ');
+
+      return `
+        <a class="list-row" href="#/clients/${client.id}">
+          <div class="list-main">
+            <div class="list-title">${escapeHtml(client.name)}</div>
+            <div class="list-sub">${details || 'нет контактов'}</div>
+          </div>
+          <div class="list-meta">добавлен ${formatDate(client.created_at)}</div>
+        </a>
+      `;
+    }).join('');
+  }
+
+  const search = document.getElementById('client-search');
+  search.addEventListener('input', () => {
+    state.query = search.value;
+    paint();
+  });
+
+  resetButton.addEventListener('click', () => {
+    state.query = '';
+    search.value = '';
+    search.focus();
+    paint();
+  });
+
+  paint();
+}
+
+async function renderClientDetail(id) {
+  viewEl.innerHTML = '<p class="muted">Загрузка…</p>';
+
+  let client;
+  let journal = [];
+  try {
+    [client, journal] = await Promise.all([
+      api(`/api/clients/${encodeURIComponent(id)}`),
+      api(`/api/journal?client_id=${encodeURIComponent(id)}`).catch(() => []),
+    ]);
+  } catch (error) {
+    viewEl.innerHTML = `
+      <div class="panel">
+        <p>${escapeHtml(error.message)}</p>
+        <p class="hint"><a href="#/clients">← ко всем клиентам</a></p>
+      </div>
+    `;
+    return;
+  }
+
+  titleEl.textContent = client.name;
+  subtitleEl.textContent = client.contact || 'карточка клиента';
+  document.title = `${client.name} · Таро`;
+
+  const readings = client.readings ?? [];
+  const readingsHtml = readings.length > 0
+    ? readings.map((reading) => `
+        <a class="list-row" href="#/readings/${reading.id}">
+          <div class="list-main">
+            <div class="list-title">${escapeHtml(reading.title || reading.question || 'Расклад')}</div>
+            <div class="list-sub">${formatDate(reading.reading_date)}${reading.spread_name ? ` · ${escapeHtml(reading.spread_name)}` : ''}</div>
+          </div>
+          <span class="status-badge status-${reading.status}">${READING_STATUS_LABELS[reading.status] ?? reading.status}</span>
+        </a>
+      `).join('')
+    : `<div class="empty">Раскладов пока нет.<br><a href="#/readings/new?client=${client.id}">Создать первый</a></div>`;
+
+  const info = [
+    client.contact ? `Контакт: ${escapeHtml(client.contact)}` : null,
+    client.birth_date ? `Дата рождения: ${formatDate(client.birth_date)}` : null,
+    `Добавлен: ${formatDate(client.created_at)}`,
+  ].filter(Boolean);
+
+  const journalHtml = journal.length > 0
+    ? journal.map((entry) => `
+        <a class="list-row" href="#/journal/${entry.id}">
+          <div class="list-main">
+            <div class="list-title">${escapeHtml(journalTitle(entry))}</div>
+            <div class="list-sub">${formatLongDate(entry.entry_date)}${entry.tags?.length ? ` · ${entry.tags.map((tag) => `#${escapeHtml(tag)}`).join(' ')}` : ''}</div>
+          </div>
+        </a>
+      `).join('')
+    : `<div class="empty">Записей пока нет.<br><a href="#/journal/new?client=${client.id}">Добавить первую</a></div>`;
+
+  viewEl.innerHTML = `
+    <a class="back-link" href="#/clients">← все клиенты</a>
+
+    <div class="panel">
+      <div class="detail-head">
+        <p class="muted detail-info">${info.join(' · ')}</p>
+        <div class="actions">
+          <a class="btn btn-primary" href="#/readings/new?client=${client.id}">Новый расклад</a>
+          <a class="btn" href="#/clients/${client.id}/edit">Редактировать</a>
+          <button class="btn btn-danger" type="button" id="client-delete">Удалить</button>
+        </div>
+      </div>
+      ${client.notes
+        ? `<div class="notes">${escapeHtml(client.notes)}</div>`
+        : '<p class="muted notes-empty">Заметок пока нет.</p>'}
+    </div>
+
+    <div class="panel">
+      <h2>Расклады</h2>
+      ${readingsHtml}
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Записи дневника</h2>
+        <a class="panel-link" href="#/journal/new?client=${client.id}">новая запись →</a>
+      </div>
+      ${journalHtml}
+    </div>
+  `;
+
+  document.getElementById('client-delete').addEventListener('click', async () => {
+    if (!confirm(`Удалить клиента «${client.name}»? Это действие нельзя отменить.`)) return;
+    try {
+      await api(`/api/clients/${client.id}`, { method: 'DELETE' });
+      location.hash = '#/clients';
+    } catch (error) {
+      alert(error.message);
+    }
+  });
+}
+
+async function renderClientForm(id) {
+  const isEdit = Boolean(id);
+  let client = { name: '', contact: '', birth_date: '', notes: '' };
+
+  if (isEdit) {
+    viewEl.innerHTML = '<p class="muted">Загрузка…</p>';
+    try {
+      client = await api(`/api/clients/${encodeURIComponent(id)}`);
+    } catch (error) {
+      viewEl.innerHTML = `
+        <div class="panel">
+          <p>${escapeHtml(error.message)}</p>
+          <p class="hint"><a href="#/clients">← ко всем клиентам</a></p>
+        </div>
+      `;
+      return;
+    }
+  }
+
+  titleEl.textContent = isEdit ? 'Редактирование клиента' : 'Новый клиент';
+  subtitleEl.textContent = isEdit ? client.name : 'Заполните карточку';
+  document.title = `${titleEl.textContent} · Таро`;
+
+  const backHref = isEdit ? `#/clients/${client.id}` : '#/clients';
+
+  viewEl.innerHTML = `
+    <a class="back-link" href="${backHref}">← назад</a>
+    <form class="panel form" id="client-form" novalidate>
+      <label>Имя <span class="req">*</span>
+        <input name="name" maxlength="200" required placeholder="Например, Анна"
+               value="${escapeHtml(client.name)}">
+      </label>
+      <label>Контакт
+        <input name="contact" maxlength="300" placeholder="Телефон, мессенджер, почта"
+               value="${escapeHtml(client.contact)}">
+      </label>
+      <label>Дата рождения
+        <input name="birth_date" type="date" value="${client.birth_date ?? ''}">
+      </label>
+      <label>Заметки
+        <textarea name="notes" rows="6"
+                  placeholder="Что важно помнить об этом человеке">${escapeHtml(client.notes)}</textarea>
+      </label>
+      <p class="form-error" id="form-error"></p>
+      <div class="form-actions">
+        <button class="btn btn-primary" type="submit">${isEdit ? 'Сохранить' : 'Добавить'}</button>
+        <a class="btn" href="${backHref}">Отмена</a>
+      </div>
+    </form>
+  `;
+
+  const form = document.getElementById('client-form');
+  const errorEl = document.getElementById('form-error');
+  const submitButton = form.querySelector('button[type="submit"]');
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(form).entries());
+
+    if (!String(data.name ?? '').trim()) {
+      errorEl.textContent = 'Имя обязательно.';
+      return;
+    }
+
+    submitButton.disabled = true;
+    errorEl.textContent = '';
+
+    try {
+      const saved = isEdit
+        ? await api(`/api/clients/${id}`, { method: 'PUT', body: JSON.stringify(data) })
+        : await api('/api/clients', { method: 'POST', body: JSON.stringify(data) });
+      location.hash = `#/clients/${saved.id}`;
+    } catch (error) {
+      errorEl.textContent = error.message;
+      submitButton.disabled = false;
+    }
+  });
+}
+
+/* ---------- Расклады ---------- */
+
+async function renderReadings() {
+  viewEl.innerHTML = `
+    <div class="cards-toolbar">
+      <input class="search" id="reading-search" type="search" autocomplete="off"
+             placeholder="Поиск по вопросу, заголовку или клиенту">
+      <a class="btn btn-primary" href="#/readings/new">Новый расклад</a>
+    </div>
+
+    <div class="filters-row">
+      <div class="chips" id="reading-status">
+        ${READING_STATUS_FILTERS.map((filter, index) => `
+          <button type="button" class="chip${index === 0 ? ' is-active' : ''}" data-status="${filter.id}">
+            ${filter.label}
+          </button>
+        `).join('')}
+      </div>
+      <select class="select chip-select" id="reading-client">
+        <option value="">Все клиенты</option>
+      </select>
+      <div class="date-range">
+        <label class="date-filter">с <input class="select" type="date" id="reading-from"></label>
+        <label class="date-filter">по <input class="select" type="date" id="reading-to"></label>
+      </div>
+      <button class="btn btn-small reset-filters" type="button" id="readings-reset" hidden>Сбросить фильтры</button>
+    </div>
+
+    <p class="result-count muted" id="readings-count"></p>
+    <div class="panel list-panel" id="readings-list"><p class="muted">Загрузка…</p></div>
+  `;
+
+  const list = document.getElementById('readings-list');
+  const counter = document.getElementById('readings-count');
+
+  let readings;
+  let clients;
+  try {
+    [readings, clients] = await Promise.all([api('/api/readings'), api('/api/clients')]);
+  } catch (error) {
+    list.innerHTML = `<p class="muted">${escapeHtml(error.message)}</p>`;
+    return;
+  }
+
+  const clientSelect = document.getElementById('reading-client');
+  clientSelect.insertAdjacentHTML('beforeend', clients
+    .map((client) => `<option value="${client.id}">${escapeHtml(client.name)}</option>`)
+    .join(''));
+  enhanceSelects(viewEl);
+
+  const state = { status: 'all', clientId: '', from: '', to: '', query: '' };
+  const resetButton = document.getElementById('readings-reset');
+
+  function updateReset() {
+    resetButton.hidden = state.status === 'all'
+      && !state.clientId
+      && !state.from
+      && !state.to
+      && !state.query.trim();
+  }
+
+  function resetFilters() {
+    state.status = 'all';
+    state.clientId = '';
+    state.from = '';
+    state.to = '';
+    state.query = '';
+
+    for (const chip of document.querySelectorAll('#reading-status .chip')) {
+      chip.classList.toggle('is-active', chip.dataset.status === 'all');
+    }
+    setSelectValue(clientSelect, '');
+    setSelectActive(clientSelect, false);
+    document.getElementById('reading-from').value = '';
+    document.getElementById('reading-to').value = '';
+    document.getElementById('reading-search').value = '';
+    paint();
+  }
+
+  function paint() {
+    const query = state.query.trim().toLowerCase();
+
+    const visible = readings.filter((reading) => {
+      if (state.status !== 'all' && reading.status !== state.status) return false;
+      if (state.clientId && String(reading.client_id) !== state.clientId) return false;
+      if (state.from && reading.reading_date < state.from) return false;
+      if (state.to && reading.reading_date > state.to) return false;
+      if (!query) return true;
+
+      const haystack = [
+        reading.title,
+        reading.question,
+        reading.client_name,
+        reading.interpretation,
+        reading.summary,
+      ].filter(Boolean).join(' ').toLowerCase();
+
+      return haystack.includes(query);
+    });
+
+    counter.textContent = `${visible.length} ${plural(visible.length, ['расклад', 'расклада', 'раскладов'])}`;
+    updateReset();
+
+    if (visible.length === 0) {
+      list.innerHTML = readings.length === 0
+        ? '<div class="empty">Пока ни одного расклада.<br><a href="#/readings/new">Создать первый</a></div>'
+        : '<div class="empty">Ничего не найдено. Попробуйте изменить фильтры.</div>';
+      return;
+    }
+
+    list.innerHTML = visible.map((reading) => {
+      const title = reading.title || reading.question || 'Без названия';
+      const question = reading.question && reading.question !== title ? reading.question : '';
+      const cardsLabel = `${reading.cards_count} ${plural(reading.cards_count, ['карта', 'карты', 'карт'])}`;
+      const spreadName = reading.spread_name || '';
+      const spreadCount = Number((spreadName.match(/^(\d+)\s+карт/) ?? [])[1]);
+      const meta = [
+        reading.client_name || 'для себя',
+        spreadName,
+        spreadCount === reading.cards_count ? '' : cardsLabel,
+      ].filter(Boolean).join(' · ');
+
+      return `
+        <div class="reading-row">
+          <a class="reading-row-link" href="#/readings/${reading.id}">
+            <div class="reading-date">${formatDate(reading.reading_date)}</div>
+            <div class="list-main">
+              <div class="list-title">${escapeHtml(title)}</div>
+              ${question ? `<div class="reading-question">${escapeHtml(question)}</div>` : ''}
+              <div class="list-sub">${escapeHtml(meta)}</div>
+            </div>
+            <span class="status-badge status-${reading.status}">${READING_STATUS_LABELS[reading.status] ?? reading.status}</span>
+          </a>
+          <button class="icon-btn danger reading-row-delete" type="button"
+                  data-delete-reading="${reading.id}" title="Удалить расклад"
+                  aria-label="Удалить расклад «${escapeHtml(title)}»">×</button>
+        </div>
+      `;
+    }).join('');
+  }
+
+  document.getElementById('reading-status').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-status]');
+    if (!button) return;
+    state.status = button.dataset.status;
+    for (const chip of document.querySelectorAll('#reading-status .chip')) {
+      chip.classList.toggle('is-active', chip === button);
+    }
+    paint();
+  });
+
+  clientSelect.addEventListener('change', () => {
+    state.clientId = clientSelect.value;
+    setSelectActive(clientSelect, Boolean(clientSelect.value));
+    paint();
+  });
+
+  document.getElementById('reading-from').addEventListener('change', (event) => {
+    state.from = event.target.value;
+    paint();
+  });
+
+  document.getElementById('reading-to').addEventListener('change', (event) => {
+    state.to = event.target.value;
+    paint();
+  });
+
+  const search = document.getElementById('reading-search');
+  search.addEventListener('input', () => {
+    state.query = search.value;
+    paint();
+  });
+
+  resetButton.addEventListener('click', resetFilters);
+
+  list.addEventListener('click', async (event) => {
+    const button = event.target.closest('[data-delete-reading]');
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    const reading = readings.find((item) => String(item.id) === button.dataset.deleteReading);
+    if (!reading) return;
+    const label = reading.title || reading.question || 'Без названия';
+    if (!confirm(`Удалить расклад «${label}»? Это действие нельзя отменить.`)) return;
+
+    button.disabled = true;
+    try {
+      await api(`/api/readings/${reading.id}`, { method: 'DELETE' });
+      readings = readings.filter((item) => item.id !== reading.id);
+      paint();
+    } catch (error) {
+      button.disabled = false;
+      alert(error.message);
+    }
+  });
+
+  paint();
+}
+
+async function renderReadingForm(id, options = {}) {
+  let isEdit = Boolean(id);
+  let reading = {
+    id: null,
+    reading_date: todayIso(),
+    client_id: null,
+    title: '',
+    question: '',
+    spread_name: '',
+    status: 'draft',
+    interpretation: null,
+    summary: null,
+    cards: [],
+  };
+  let clients = [];
+  let deck = [];
+
+  viewEl.innerHTML = '<p class="muted">Загрузка…</p>';
+
+  try {
+    const [clientRows, loaded, deckCards] = await Promise.all([
+      api('/api/clients'),
+      isEdit ? api(`/api/readings/${encodeURIComponent(id)}`) : Promise.resolve(null),
+      getCards(),
+    ]);
+    clients = clientRows;
+    deck = deckCards;
+    if (loaded) reading = loaded;
+    if (!isEdit && options.clientId) reading.client_id = Number(options.clientId);
+  } catch (error) {
+    viewEl.innerHTML = `
+      <div class="panel">
+        <p>${escapeHtml(error.message)}</p>
+        <p class="hint"><a href="#/readings">← к списку раскладов</a></p>
+      </div>
+    `;
+    return;
+  }
+
+  titleEl.textContent = isEdit ? 'Редактирование расклада' : 'Новый расклад';
+  subtitleEl.textContent = isEdit
+    ? (reading.title || reading.question || 'Без названия')
+    : 'Дата, клиент, вопрос и тип';
+  document.title = `${titleEl.textContent} · Таро`;
+
+  const spreadOptions = [...SPREAD_TYPES];
+  if (reading.spread_name && !spreadOptions.includes(reading.spread_name)) {
+    spreadOptions.push(reading.spread_name);
+  }
+
+  viewEl.innerHTML = `
+    <a class="back-link" href="#/readings">← к списку раскладов</a>
+    <form class="panel form" id="reading-form" novalidate>
+      <div class="form-row">
+        <label><span>Дата <span class="req">*</span></span>
+          <input name="reading_date" type="date" required value="${escapeHtml(reading.reading_date)}">
+        </label>
+        <label>Клиент
+          <select name="client_id">
+            <option value="">Для себя</option>
+            ${clients.map((client) => `
+              <option value="${client.id}"${Number(reading.client_id) === client.id ? ' selected' : ''}>
+                ${escapeHtml(client.name)}
+              </option>
+            `).join('')}
+          </select>
+        </label>
+      </div>
+
+      <label>Заголовок
+        <input name="title" maxlength="200" placeholder="Короткое название, например «Отношения: что происходит»"
+               value="${escapeHtml(reading.title)}">
+      </label>
+
+      <label>Вопрос
+        <textarea name="question" rows="4" maxlength="1000"
+                  placeholder="С чем пришёл человек, что спрашиваем у карт">${escapeHtml(reading.question)}</textarea>
+      </label>
+
+      <label>Тип расклада
+        <select name="spread_name">
+          <option value="">Не выбран</option>
+          ${spreadOptions.map((name) => `
+            <option value="${escapeHtml(name)}"${reading.spread_name === name ? ' selected' : ''}>
+              ${escapeHtml(name)}
+            </option>
+          `).join('')}
+        </select>
+      </label>
+      <p class="field-hint muted" id="spread-hint"></p>
+
+      <div class="reading-cards">
+        <div class="reading-cards-head">
+          <h3>Карты <span class="reading-cards-count" id="reading-cards-count"></span></h3>
+          <button type="button" class="btn" id="toggle-picker">Добавить карту</button>
+        </div>
+        <div class="reading-cards-tools">
+          <button type="button" class="btn" id="draw-cards">Вытянуть карты</button>
+          <button type="button" class="btn" id="draw-one">Вытянуть одну</button>
+          <button type="button" class="btn" id="refresh-interps"
+                  title="Подтянуть трактовки, добавленные в другой вкладке">Обновить трактовки</button>
+          <span class="muted" id="draw-hint"></span>
+        </div>
+        <div class="cards-editor" id="reading-cards-list"></div>
+        <div class="card-picker" id="card-picker" hidden>
+          <input class="search" id="card-picker-search" type="search" autocomplete="off"
+                 placeholder="Поиск карты по названию или ключевому слову">
+          <div class="card-picker-note muted" id="card-picker-note"></div>
+          <div class="card-picker-grid" id="card-picker-grid"></div>
+        </div>
+      </div>
+
+      <label>Трактовка расклада
+        <textarea name="interpretation" rows="8" maxlength="2000"
+                  placeholder="Что показывает расклад: карта за картой, связи между позициями">${escapeHtml(reading.interpretation ?? '')}</textarea>
+      </label>
+      <p class="field-hint muted">Максимум 2000 символов.</p>
+
+      <label>Выводы
+        <textarea name="summary" rows="4" maxlength="2000"
+                  placeholder="Короткий итог, совет, к чему пришли">${escapeHtml(reading.summary ?? '')}</textarea>
+      </label>
+      <p class="field-hint muted">Максимум 2000 символов.</p>
+
+      <label>Статус
+        <select name="status">
+          <option value="draft"${reading.status === 'draft' ? ' selected' : ''}>Черновик</option>
+          <option value="done"${reading.status === 'done' ? ' selected' : ''}>Завершён</option>
+          <option value="archived"${reading.status === 'archived' ? ' selected' : ''}>В архиве</option>
+        </select>
+      </label>
+
+      <p class="form-error" id="form-error"></p>
+      <p class="form-ok" id="form-ok" hidden>Черновик сохранён</p>
+
+      <div class="form-actions">
+        <button class="btn btn-primary" type="submit">${isEdit ? 'Сохранить изменения' : 'Сохранить черновик'}</button>
+        <button class="btn" type="button" id="finish-reading">Завершить</button>
+        <a class="btn" href="#/readings">Отмена</a>
+      </div>
+    </form>
+  `;
+
+  const form = document.getElementById('reading-form');
+  const errorEl = document.getElementById('form-error');
+  const okEl = document.getElementById('form-ok');
+  const submitButton = form.querySelector('button[type="submit"]');
+  enhanceSelects(form);
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(form).entries());
+
+    if (!data.reading_date) {
+      errorEl.textContent = 'Укажите дату расклада.';
+      return;
+    }
+
+    errorEl.textContent = '';
+    okEl.hidden = true;
+    submitButton.disabled = true;
+
+    const payload = {
+      reading_date: data.reading_date,
+      client_id: data.client_id ? Number(data.client_id) : null,
+      title: data.title,
+      question: data.question,
+      spread_name: data.spread_name,
+      status: data.status || 'draft',
+      interpretation: data.interpretation ?? '',
+      summary: data.summary ?? '',
+      cards: (reading.cards ?? []).map((card, index) => ({
+        card_id: card.card_id,
+        position_index: index + 1,
+        position_name: String(card.position_name ?? '').trim() || null,
+        is_reversed: card.is_reversed ? 1 : 0,
+        interpretation_id: card.interpretation_id ?? null,
+        note: card.note ?? null,
+      })),
+    };
+
+    try {
+      const saved = isEdit
+        ? await api(`/api/readings/${reading.id}`, { method: 'PUT', body: JSON.stringify(payload) })
+        : await api('/api/readings', { method: 'POST', body: JSON.stringify(payload) });
+
+      reading = saved;
+      isEdit = true;
+
+      if (!location.hash.endsWith(`/readings/${saved.id}/edit`)) {
+        history.replaceState(null, '', `#/readings/${saved.id}/edit`);
+      }
+
+      titleEl.textContent = 'Редактирование расклада';
+      subtitleEl.textContent = saved.title || saved.question || 'Без названия';
+      document.title = 'Редактирование расклада · Таро';
+      submitButton.textContent = 'Сохранить изменения';
+      okEl.textContent = saved.status === 'done'
+        ? 'Расклад завершён'
+        : saved.status === 'archived'
+          ? 'Расклад в архиве'
+          : 'Черновик сохранён';
+      okEl.hidden = false;
+      paintReadingCards();
+    } catch (error) {
+      errorEl.textContent = error.message;
+    } finally {
+      submitButton.disabled = false;
+    }
+  });
+
+  document.getElementById('finish-reading').addEventListener('click', () => {
+    setSelectValue(form.elements.status, 'done');
+    form.requestSubmit();
+  });
+
+  /* ----- Карты в раскладе ----- */
+
+  const cardsHost = document.getElementById('reading-cards-list');
+  const cardsCount = document.getElementById('reading-cards-count');
+  const picker = document.getElementById('card-picker');
+  const pickerGrid = document.getElementById('card-picker-grid');
+  const pickerNote = document.getElementById('card-picker-note');
+  const pickerSearch = document.getElementById('card-picker-search');
+  const togglePicker = document.getElementById('toggle-picker');
+  const spreadSelect = form.elements.spread_name;
+  const spreadHint = document.getElementById('spread-hint');
+  const drawHint = document.getElementById('draw-hint');
+  const drawCardsButton = document.getElementById('draw-cards');
+  const drawOneButton = document.getElementById('draw-one');
+  const deckById = new Map(deck.map((card) => [card.id, card]));
+
+  function currentPositions() {
+    return SPREAD_POSITIONS[spreadSelect.value] ?? [];
+  }
+
+  function paintHints() {
+    const positions = currentPositions();
+
+    spreadHint.textContent = positions.length === 0
+      ? 'Выберите шаблон — названия позиций подставятся автоматически.'
+      : positions.length <= 3
+        ? positions.join(' · ')
+        : `${positions.length} ${plural(positions.length, ['позиция', 'позиции', 'позиций'])}`;
+
+    if (positions.length === 0) {
+      drawHint.textContent = 'Без шаблона — 3 карты';
+      return;
+    }
+
+    const free = positions.length - reading.cards.length;
+    drawHint.textContent = free > 0
+      ? `Свободно ${free} ${plural(free, ['позиция', 'позиции', 'позиций'])}`
+      : 'Все позиции шаблона заняты';
+  }
+
+  function makeCard(card, positionName, isReversed = Math.random() < 0.3 ? 1 : 0) {
+    return {
+      card_id: card.id,
+      name_ru: card.name_ru,
+      name_en: card.name_en,
+      image: card.image,
+      slug: card.slug,
+      position_name: positionName ?? '',
+      is_reversed: isReversed,
+      interpretation_id: null,
+      note: null,
+    };
+  }
+
+  function interpretationsFor(card) {
+    const source = deckById.get(card.card_id)?.interpretations ?? [];
+    const orientation = card.is_reversed ? 'reversed' : 'upright';
+    return source.filter((item) => item.orientation === orientation);
+  }
+
+  function hasValidInterpretation(card) {
+    return interpretationsFor(card).some((item) => item.id === card.interpretation_id);
+  }
+
+  function shortText(value, max = 48) {
+    const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+    return text.length > max ? `${text.slice(0, max)}…` : text;
+  }
+
+  async function refreshInterpretations() {
+    try {
+      const fresh = await api('/api/cards');
+      deck = fresh;
+      deckById.clear();
+      for (const item of fresh) deckById.set(item.id, item);
+      cardsCache = fresh;
+      errorEl.textContent = '';
+      paintReadingCards();
+    } catch (error) {
+      errorEl.textContent = error.message;
+    }
+  }
+
+  function randomFreeCard() {
+    const used = new Set(reading.cards.map((card) => card.card_id));
+    const free = deck.filter((card) => !used.has(card.id));
+    if (free.length === 0) return null;
+    return free[Math.floor(Math.random() * free.length)];
+  }
+
+  function cardThumb(card, className = '') {
+    return `<span class="reading-card-thumb${card.is_reversed ? ' is-reversed' : ''}${className ? ` ${className}` : ''}">
+      <img src="${card.image || 'cards/placeholder.svg'}" alt="" loading="lazy"
+           onerror="this.onerror=null;this.src='cards/placeholder.svg'">
+    </span>`;
+  }
+
+  function paintReadingCards() {
+    cardsCount.textContent = reading.cards.length > 0 ? String(reading.cards.length) : '';
+    paintHints();
+
+    if (reading.cards.length === 0) {
+      cardsHost.innerHTML = '<p class="cards-editor-empty muted">Карт пока нет. Нажмите «Добавить карту» или «Вытянуть карты».</p>';
+      paintPicker();
+      return;
+    }
+
+    const template = currentPositions();
+
+    cardsHost.innerHTML = reading.cards.map((card, index) => {
+      const interps = interpretationsFor(card);
+      const selected = interps.find((item) => item.id === card.interpretation_id) ?? null;
+      if (!selected) card.interpretation_id = null;
+      const source = deckById.get(card.card_id);
+      const original = (card.is_reversed ? source?.reversed : source?.upright) ?? '';
+
+      return `
+      <div class="reading-card-row" data-index="${index}">
+        <span class="position-index">${index + 1}</span>
+        ${cardThumb(card)}
+        <div class="reading-card-main">
+          <div class="reading-card-name">
+            ${escapeHtml(card.name_ru)}
+            <span class="muted">(${escapeHtml(card.name_en)})</span>
+          </div>
+          <div class="reading-card-controls">
+            <input class="position-name" data-field="position_name" maxlength="120"
+                   value="${escapeHtml(card.position_name ?? '')}"
+                   placeholder="${escapeHtml(template[index] || `Позиция ${index + 1}: название`)}">
+            <button type="button" class="reverse-toggle${card.is_reversed ? ' is-on' : ''}"
+                    data-action="reverse" aria-pressed="${Boolean(card.is_reversed)}">
+              ${card.is_reversed ? 'Перевёрнутая' : 'Прямая'}
+            </button>
+          </div>
+          <div class="reading-card-interp">
+            ${interps.length > 0
+              ? `<select class="interp-pick" data-field="interpretation_id">
+                   <option value="">Без своей трактовки</option>
+                   ${interps.map((item) => `
+                     <option value="${item.id}"${selected?.id === item.id ? ' selected' : ''}>
+                       ${escapeHtml(item.title || shortText(item.body, 40))}
+                     </option>
+                   `).join('')}
+                 </select>
+                 <p class="interp-preview"${selected ? '' : ' hidden'}>${selected
+                   ? escapeHtml(shortText(selected.body, 180))
+                   : ''}</p>`
+              : `<p class="interp-none">
+                   Нет своих трактовок для ${card.is_reversed ? 'перевёрнутого' : 'прямого'} положения.
+                   <a href="#/cards/${card.card_id}/edit" target="_blank" rel="noopener">Добавить</a>
+                   <button type="button" class="icon-btn" data-action="refresh-interps"
+                           title="Обновить список трактовок">↻</button>
+                 </p>`}
+          </div>
+          ${original
+            ? `<details class="reading-card-original">
+                 <summary>Описание карты · ${card.is_reversed ? 'перевёрнутое' : 'прямое'} положение</summary>
+                 <p>${escapeHtml(original)}</p>
+               </details>`
+            : ''}
+        </div>
+        <div class="reading-card-actions">
+          <button type="button" class="icon-btn" data-action="up" title="Выше"
+                  ${index === 0 ? 'disabled' : ''}>↑</button>
+          <button type="button" class="icon-btn" data-action="down" title="Ниже"
+                  ${index === reading.cards.length - 1 ? 'disabled' : ''}>↓</button>
+          <button type="button" class="icon-btn danger" data-action="remove" title="Убрать карту">×</button>
+        </div>
+      </div>
+    `;
+    }).join('');
+
+    enhanceSelects(cardsHost);
+    paintPicker();
+  }
+
+  function paintPicker() {
+    if (picker.hidden) return;
+
+    const query = pickerSearch.value.trim().toLowerCase();
+    const used = new Set(reading.cards.map((card) => card.card_id));
+    const list = deck.filter((card) => {
+      if (!query) return true;
+      const haystack = `${card.name_ru} ${card.name_en} ${(card.keywords ?? []).join(' ')}`.toLowerCase();
+      return haystack.includes(query);
+    });
+
+    pickerNote.textContent = `${list.length} ${plural(list.length, ['карта', 'карты', 'карт'])} · в раскладе ${used.size}`;
+    pickerGrid.innerHTML = list.length > 0
+      ? list.map((card) => `
+          <button type="button" class="picker-card" data-card-id="${card.id}"
+                  ${used.has(card.id) ? 'disabled title="Уже в раскладе"' : ''}>
+            <img src="${card.image || 'cards/placeholder.svg'}" alt="" loading="lazy"
+                 onerror="this.onerror=null;this.src='cards/placeholder.svg'">
+            <span class="picker-card-name">${escapeHtml(card.name_ru)}</span>
+          </button>
+        `).join('')
+      : '<p class="muted">Ничего не найдено.</p>';
+  }
+
+  function addCard(cardId) {
+    if (reading.cards.length >= 25) {
+      errorEl.textContent = 'В раскладе уже максимум 25 карт.';
+      return;
+    }
+    const card = deckById.get(cardId);
+    if (!card) return;
+
+    errorEl.textContent = '';
+    const template = currentPositions();
+    reading.cards.push(makeCard(card, template[reading.cards.length] ?? '', 0));
+    paintReadingCards();
+  }
+
+  function drawAll() {
+    const template = currentPositions();
+    const target = template.length || 3;
+    let free = target - reading.cards.length;
+
+    if (free <= 0) {
+      if (!confirm('Все позиции заняты. Заменить карты новыми?')) return;
+      reading.cards = [];
+      free = target;
+    }
+
+    if (reading.cards.length + free > 25) free = 25 - reading.cards.length;
+
+    for (let index = 0; index < free; index += 1) {
+      const card = randomFreeCard();
+      if (!card) break;
+      reading.cards.push(makeCard(card, template[reading.cards.length] ?? ''));
+    }
+
+    errorEl.textContent = '';
+    paintReadingCards();
+  }
+
+  function drawOne() {
+    if (reading.cards.length >= 25) {
+      errorEl.textContent = 'В раскладе уже максимум 25 карт.';
+      return;
+    }
+
+    const card = randomFreeCard();
+    if (!card) {
+      errorEl.textContent = 'Все 78 карт уже в раскладе.';
+      return;
+    }
+
+    const template = currentPositions();
+    reading.cards.push(makeCard(card, template[reading.cards.length] ?? ''));
+    errorEl.textContent = '';
+    paintReadingCards();
+  }
+
+  spreadSelect.addEventListener('change', () => {
+    const template = currentPositions();
+    const hasCustomNames = reading.cards.some((card, index) => {
+      const name = String(card.position_name ?? '').trim();
+      return name && name !== template[index];
+    });
+
+    if (template.length > 0 && hasCustomNames) {
+      if (!confirm('Заменить названия позиций по шаблону?')) {
+        paintHints();
+        return;
+      }
+    }
+
+    reading.cards.forEach((card, index) => {
+      if (template[index]) card.position_name = template[index];
+    });
+    paintReadingCards();
+  });
+
+  drawCardsButton.addEventListener('click', drawAll);
+  drawOneButton.addEventListener('click', drawOne);
+  document.getElementById('refresh-interps').addEventListener('click', refreshInterpretations);
+
+  cardsHost.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-action]');
+    if (!button) return;
+    const row = button.closest('[data-index]');
+    if (!row) return;
+
+    const index = Number(row.dataset.index);
+    const action = button.dataset.action;
+
+    if (action === 'up' && index > 0) {
+      [reading.cards[index - 1], reading.cards[index]] = [reading.cards[index], reading.cards[index - 1]];
+    } else if (action === 'down' && index < reading.cards.length - 1) {
+      [reading.cards[index + 1], reading.cards[index]] = [reading.cards[index], reading.cards[index + 1]];
+    } else if (action === 'reverse') {
+      const card = reading.cards[index];
+      card.is_reversed = card.is_reversed ? 0 : 1;
+      // Трактовка привязана к положению: если оно изменилось — сбрасываем.
+      if (!hasValidInterpretation(card)) card.interpretation_id = null;
+    } else if (action === 'refresh-interps') {
+      refreshInterpretations();
+      return;
+    } else if (action === 'remove') {
+      reading.cards.splice(index, 1);
+    } else {
+      return;
+    }
+
+    paintReadingCards();
+  });
+
+  cardsHost.addEventListener('input', (event) => {
+    const input = event.target.closest('[data-field="position_name"]');
+    if (!input) return;
+    const row = input.closest('[data-index]');
+    if (!row) return;
+    reading.cards[Number(row.dataset.index)].position_name = input.value;
+  });
+
+  cardsHost.addEventListener('change', (event) => {
+    const select = event.target.closest('[data-field="interpretation_id"]');
+    if (!select) return;
+    const row = select.closest('[data-index]');
+    if (!row) return;
+
+    const card = reading.cards[Number(row.dataset.index)];
+    card.interpretation_id = select.value ? Number(select.value) : null;
+
+    const item = interpretationsFor(card).find((row2) => row2.id === card.interpretation_id) ?? null;
+    const preview = row.querySelector('.interp-preview');
+    if (preview) {
+      preview.textContent = item ? shortText(item.body, 180) : '';
+      preview.hidden = !item;
+    }
+  });
+
+  togglePicker.addEventListener('click', () => {
+    const willOpen = picker.hidden;
+    picker.hidden = !willOpen;
+    togglePicker.textContent = willOpen ? 'Скрыть' : 'Добавить карту';
+    if (willOpen) {
+      paintPicker();
+      pickerSearch.focus();
+    }
+  });
+
+  pickerSearch.addEventListener('input', paintPicker);
+
+  pickerGrid.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-card-id]');
+    if (!button || button.disabled) return;
+    addCard(Number(button.dataset.cardId));
+  });
+
+  paintReadingCards();
+}
+
+/* ---------- Страница расклада ---------- */
+
+async function renderReadingView(id) {
+  viewEl.innerHTML = '<p class="muted">Загрузка расклада…</p>';
+
+  let reading;
+  try {
+    reading = await api(`/api/readings/${encodeURIComponent(id)}`);
+  } catch (error) {
+    viewEl.innerHTML = `
+      <div class="panel">
+        <p>${escapeHtml(error.message)}</p>
+        <p class="hint"><a href="#/readings">← ко всем раскладам</a></p>
+      </div>
+    `;
+    return;
+  }
+
+  let journal = [];
+  try {
+    journal = await api(`/api/journal?reading_id=${reading.id}`);
+  } catch {
+    // дневник не должен мешать открытию расклада
+  }
+
+  const title = reading.title || reading.question || 'Расклад';
+  titleEl.textContent = title;
+  subtitleEl.textContent = `${formatDate(reading.reading_date)} · ${reading.client_name || 'для себя'}`;
+  document.title = `${title} · Таро`;
+
+  const cardsLabel = `${reading.cards.length} ${plural(reading.cards.length, ['карта', 'карты', 'карт'])}`;
+  const spreadName = reading.spread_name || '';
+  const spreadCount = Number((spreadName.match(/^(\d+)\s+карт/) ?? [])[1]);
+  const meta = [
+    reading.client_id
+      ? `<a href="#/clients/${reading.client_id}">${escapeHtml(reading.client_name)}</a>`
+      : 'для себя',
+    spreadName ? escapeHtml(spreadName) : null,
+    spreadCount === reading.cards.length ? null : cardsLabel,
+  ].filter(Boolean).join(' · ');
+
+  const cardsHtml = reading.cards.length > 0
+    ? `<div class="view-cards">${reading.cards.map((card) => `
+        <a class="view-card" href="#/cards/${card.card_id}">
+          <span class="view-card-thumb${card.is_reversed ? ' is-reversed' : ''}">
+            <img src="${card.image || 'cards/placeholder.svg'}" alt="${escapeHtml(card.name_ru)}" loading="lazy"
+                 onerror="this.onerror=null;this.src='cards/placeholder.svg'">
+          </span>
+          <span class="view-card-position">${card.position_index}. ${escapeHtml(card.position_name || `Позиция ${card.position_index}`)}</span>
+          <span class="view-card-name">${escapeHtml(card.name_ru)}
+            <span class="muted">(${escapeHtml(card.name_en)})</span>
+          </span>
+          ${card.is_reversed ? '<span class="view-card-reversed">перевёрнутая</span>' : ''}
+        </a>
+      `).join('')}</div>`
+    : '<div class="empty">В раскладе пока нет карт. <a href="#/readings/' + reading.id + '/edit">Добавить карты</a></div>';
+
+  const interpCards = reading.cards.filter((card) => card.interpretation_id && card.interpretation_body);
+
+  const interpsHtml = interpCards.length > 0
+    ? `<div class="reading-interps">${interpCards.map((card) => `
+        <div class="reading-interp">
+          <div class="reading-interp-head">
+            <span class="reading-interp-position">${card.position_index}. ${escapeHtml(card.position_name || `Позиция ${card.position_index}`)}</span>
+            <a href="#/cards/${card.card_id}">${escapeHtml(card.name_ru)}</a>
+            ${card.is_reversed ? '<span class="view-card-reversed">перевёрнутая</span>' : ''}
+          </div>
+          ${card.interpretation_title
+            ? `<div class="interp-title">${escapeHtml(card.interpretation_title)}</div>`
+            : ''}
+          <div class="interp-body">${escapeHtml(card.interpretation_body)}</div>
+        </div>
+      `).join('')}</div>`
+    : '';
+
+  const originalsTitle = reading.cards.length === 1 ? 'Описание карты' : 'Описание карт';
+
+  const journalLink = `#/journal/new?reading=${reading.id}${reading.client_id ? `&client=${reading.client_id}` : ''}`;
+  const journalHtml = `
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Записи дневника</h2>
+        <a class="panel-link" href="${journalLink}">новая запись →</a>
+      </div>
+      ${journal.length > 0
+        ? journal.map((entry) => `
+            <a class="list-row" href="#/journal/${entry.id}">
+              <div class="list-main">
+                <div class="list-title">${escapeHtml(journalTitle(entry))}</div>
+                <div class="list-sub">${formatLongDate(entry.entry_date)}${entry.tags?.length ? ` · ${entry.tags.map((tag) => `#${escapeHtml(tag)}`).join(' ')}` : ''}</div>
+              </div>
+            </a>
+          `).join('')
+        : `<div class="empty">Записей по этому раскладу пока нет. <a href="${journalLink}">Добавить</a></div>`}
+    </div>
+  `;
+
+  const editablePanel = (field, title, emptyText) => `
+    <div class="panel" data-panel="${field}">
+      <div class="panel-head">
+        <h2>${title}</h2>
+        <button class="btn btn-small" type="button" data-edit="${field}">Редактировать</button>
+      </div>
+      <div class="panel-body">
+        ${reading[field]
+          ? `<div class="notes">${escapeHtml(reading[field])}</div>`
+          : `<p class="muted notes-empty">${emptyText}</p>`}
+      </div>
+    </div>
+  `;
+
+  const originalsHtml = reading.cards.length > 0
+    ? `<div class="reading-originals">${reading.cards.map((card) => {
+        const text = (card.is_reversed ? card.reversed : card.upright) ?? '';
+        if (!text) return '';
+        return `
+          <details class="reading-original">
+            <summary>
+              <span class="reading-interp-position">${card.position_index}. ${escapeHtml(card.position_name || `Позиция ${card.position_index}`)}</span>
+              · ${escapeHtml(card.name_ru)}
+              <span class="muted">(${escapeHtml(card.name_en)})</span>
+              ${card.is_reversed ? '<span class="view-card-reversed">перевёрнутая</span>' : ''}
+            </summary>
+            <div class="interp-body">${escapeHtml(text)}</div>
+          </details>
+        `;
+      }).join('')}</div>`
+    : '';
+
+  viewEl.innerHTML = `
+    <a class="back-link" href="#/readings">← все расклады</a>
+
+    <div class="panel">
+      <div class="detail-head">
+        <div class="reading-view-head">
+          <p class="muted detail-info">${meta}</p>
+          <span class="status-badge status-${reading.status}">${READING_STATUS_LABELS[reading.status] ?? reading.status}</span>
+        </div>
+        <div class="actions">
+          <a class="btn" href="#/readings/${reading.id}/edit">Редактировать</a>
+          <button class="btn btn-danger" type="button" id="reading-delete">Удалить</button>
+        </div>
+      </div>
+
+      ${reading.question
+        ? `<blockquote class="reading-question-box">${escapeHtml(reading.question)}</blockquote>`
+        : ''}
+
+      ${cardsHtml}
+    </div>
+
+    ${interpsHtml
+      ? `<div class="panel">
+           <h2>Мои трактовки к картам</h2>
+           ${interpsHtml}
+         </div>`
+      : ''}
+
+    ${originalsHtml
+      ? `<div class="panel">
+           <h2>${originalsTitle}</h2>
+           <p class="muted reading-originals-note">Тексты из справочника — для положения, в котором выпала каждая карта.</p>
+           ${originalsHtml}
+         </div>`
+      : ''}
+
+    ${editablePanel('interpretation', 'Трактовка расклада', 'Пока не заполнена.')}
+
+    ${editablePanel('summary', 'Выводы', 'Пока не заполнены.')}
+
+    ${journalHtml}
+  `;
+
+  function setupInlineEdit(field, rows, placeholder, emptyText) {
+    const panel = viewEl.querySelector(`[data-panel="${field}"]`);
+    if (!panel) return;
+
+    const button = panel.querySelector(`[data-edit="${field}"]`);
+    const body = panel.querySelector('.panel-body');
+
+    function paintValue() {
+      body.innerHTML = reading[field]
+        ? `<div class="notes">${escapeHtml(reading[field])}</div>`
+        : `<p class="muted notes-empty">${emptyText}</p>`;
+      button.hidden = false;
+    }
+
+    button.addEventListener('click', () => {
+      button.hidden = true;
+      body.innerHTML = `
+        <form class="form inline-edit" novalidate>
+          <textarea name="value" rows="${rows}" maxlength="2000"
+                    placeholder="${escapeHtml(placeholder)}">${escapeHtml(reading[field] ?? '')}</textarea>
+          <p class="field-hint muted">Максимум 2000 символов.</p>
+          <p class="form-error"></p>
+          <div class="form-actions">
+            <button class="btn btn-primary" type="submit">Сохранить</button>
+            <button class="btn" type="button" data-cancel>Отмена</button>
+          </div>
+        </form>
+      `;
+
+      const form = body.querySelector('form');
+      const textarea = form.elements.value;
+      const errorEl = form.querySelector('.form-error');
+      const submit = form.querySelector('button[type="submit"]');
+      textarea.focus();
+
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        errorEl.textContent = '';
+        submit.disabled = true;
+
+        try {
+          const saved = await api(`/api/readings/${reading.id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ [field]: textarea.value }),
+          });
+          reading = saved;
+          paintValue();
+        } catch (error) {
+          errorEl.textContent = error.message;
+          submit.disabled = false;
+        }
+      });
+
+      form.querySelector('[data-cancel]').addEventListener('click', paintValue);
+    });
+  }
+
+  setupInlineEdit(
+    'interpretation',
+    8,
+    'Что показывает расклад: карта за картой, связи между позициями',
+    'Пока не заполнена.',
+  );
+  setupInlineEdit(
+    'summary',
+    4,
+    'Короткий итог, совет, к чему пришли',
+    'Пока не заполнены.',
+  );
+
+  document.getElementById('reading-delete').addEventListener('click', async () => {
+    if (!confirm(`Удалить расклад «${title}»? Это действие нельзя отменить.`)) return;
+    try {
+      await api(`/api/readings/${reading.id}`, { method: 'DELETE' });
+      location.hash = '#/readings';
+    } catch (error) {
+      alert(error.message);
+    }
+  });
+}
+
+/* ---------- Дневник ---------- */
+
+const MONTHS_GENITIVE = [
+  'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+  'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря',
+];
+
+const MONTHS_NOMINATIVE = [
+  'январь', 'февраль', 'март', 'апрель', 'май', 'июнь',
+  'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь',
+];
+
+function parseMonth(value) {
+  return /^\d{4}-(0[1-9]|1[0-2])$/.test(String(value ?? '')) ? value : todayIso().slice(0, 7);
+}
+
+function monthLabel(value) {
+  const [year, month] = String(value).split('-').map(Number);
+  return `${MONTHS_NOMINATIVE[month - 1]} ${year}`;
+}
+
+function shiftMonth(value, delta) {
+  const [year, month] = String(value).split('-').map(Number);
+  const date = new Date(year, month - 1 + delta, 1);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function isoFromParts(year, monthIndex, day) {
+  return `${year}-${String(monthIndex + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+function formatLongDate(value) {
+  const datePart = String(value ?? '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(datePart)) return formatDate(value);
+  const [year, month, day] = datePart.split('-').map(Number);
+  return `${day} ${MONTHS_GENITIVE[month - 1]} ${year}`;
+}
+
+function journalExcerpt(value, max = 200) {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 1).trimEnd()}…`;
+}
+
+function journalTitle(entry) {
+  return entry.title || journalExcerpt(entry.body, 80) || 'Без заголовка';
+}
+
+function journalTagsHtml(tags, linkable = false) {
+  if (!Array.isArray(tags) || tags.length === 0) return '';
+  const items = tags.map((tag) => (linkable
+    ? `<a class="tag" href="#/journal?tag=${encodeURIComponent(tag)}">#${escapeHtml(tag)}</a>`
+    : `<span class="tag">#${escapeHtml(tag)}</span>`)).join('');
+  return `<div class="journal-tags">${items}</div>`;
+}
+
+function journalLinksHtml(entry, options = {}) {
+  const links = [];
+
+  if (entry.client_id) {
+    links.push(`
+      <a class="journal-link" href="#/clients/${entry.client_id}">
+        <span class="journal-link-label">Клиент</span>
+        ${escapeHtml(entry.client_name || `#${entry.client_id}`)}
+      </a>
+    `);
+  }
+
+  if (entry.reading_id) {
+    const label = entry.reading_title
+      || (entry.reading_date ? formatDate(entry.reading_date) : `#${entry.reading_id}`);
+    links.push(`
+      <a class="journal-link" href="#/readings/${entry.reading_id}">
+        <span class="journal-link-label">Расклад</span>
+        ${escapeHtml(label)}
+      </a>
+    `);
+  }
+
+  if (entry.card_id) {
+    const image = options.withImage && entry.card_image
+      ? `<img src="${escapeHtml(entry.card_image)}" alt=""
+              onerror="this.onerror=null;this.src='cards/placeholder.svg'">`
+      : '';
+    links.push(`
+      <a class="journal-link journal-link-card" href="#/cards/${entry.card_id}">
+        ${image}
+        <span>
+          <span class="journal-link-label">Карта</span>
+          ${escapeHtml(entry.card_name_ru || `#${entry.card_id}`)}
+        </span>
+      </a>
+    `);
+  }
+
+  return links.length > 0 ? `<div class="journal-links">${links.join('')}</div>` : '';
+}
+
+function journalEntryRow(entry) {
+  const hasTitle = Boolean(entry.title);
+  const title = journalTitle(entry);
+  const excerpt = entry.body && (hasTitle || String(entry.body).trim().length > 80)
+    ? journalExcerpt(entry.body, 220)
+    : '';
+
+  const meta = [
+    entry.client_name,
+    entry.reading_title,
+    entry.card_name_ru,
+  ].filter(Boolean).map(escapeHtml).join(' · ');
+
+  return `
+    <a class="journal-entry" href="#/journal/${entry.id}">
+      <div class="journal-entry-main">
+        <div class="journal-entry-title">${escapeHtml(title)}</div>
+        ${excerpt ? `<div class="journal-entry-excerpt">${escapeHtml(excerpt)}</div>` : ''}
+        ${journalTagsHtml(entry.tags)}
+      </div>
+      <div class="journal-entry-side">
+        ${meta ? `<div class="journal-entry-meta">${meta}</div>` : ''}
+        <span class="journal-entry-arrow" aria-hidden="true">→</span>
+      </div>
+    </a>
+  `;
+}
+
+async function renderJournal(params = new URLSearchParams()) {
+  const today = todayIso();
+  const state = {
+    query: params.get('q') ?? '',
+    clientId: params.get('client') ?? '',
+    from: params.get('from') ?? '',
+    to: params.get('to') ?? '',
+    tag: params.get('tag') ?? '',
+    view: params.get('view') === 'calendar' ? 'calendar' : 'list',
+    month: parseMonth(params.get('month')),
+    selectedDate: '',
+  };
+
+  const dateParam = params.get('date') ?? '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
+    state.selectedDate = dateParam;
+    if (state.view === 'calendar' && !params.get('month')) state.month = dateParam.slice(0, 7);
+  }
+  if (state.view === 'calendar' && !state.selectedDate && today.startsWith(state.month)) {
+    state.selectedDate = today;
+  }
+
+  viewEl.innerHTML = `
+    <div class="cards-toolbar">
+      <input class="search" id="journal-search" type="search" autocomplete="off"
+             placeholder="Поиск по заголовку, тексту, тегам, клиенту"
+             value="${escapeHtml(state.query)}">
+      <a class="btn btn-primary" href="#/journal/new">Новая запись</a>
+    </div>
+
+    <div class="filters-row">
+      <div class="journal-view-toggle" id="journal-view" role="group" aria-label="Вид дневника">
+        <button type="button" data-view="list" aria-pressed="${state.view === 'list'}">Список</button>
+        <button type="button" data-view="calendar" aria-pressed="${state.view === 'calendar'}">Календарь</button>
+      </div>
+      <select class="select chip-select" id="journal-client">
+        <option value="">Все клиенты</option>
+      </select>
+      <div class="date-range">
+        <label class="date-filter">с <input class="select" type="date" id="journal-from" value="${escapeHtml(state.from)}"></label>
+        <label class="date-filter">по <input class="select" type="date" id="journal-to" value="${escapeHtml(state.to)}"></label>
+      </div>
+      <button class="btn btn-small reset-filters" type="button" id="journal-reset" hidden>Сбросить фильтры</button>
+    </div>
+
+    <div class="chips journal-tag-filter" id="journal-tags"></div>
+
+    <p class="result-count muted" id="journal-count"></p>
+    <div id="journal-list"><p class="muted">Загрузка…</p></div>
+  `;
+
+  const list = document.getElementById('journal-list');
+  const counter = document.getElementById('journal-count');
+  const tagHost = document.getElementById('journal-tags');
+  const search = document.getElementById('journal-search');
+  const fromInput = document.getElementById('journal-from');
+  const toInput = document.getElementById('journal-to');
+  const resetButton = document.getElementById('journal-reset');
+  const viewHost = document.getElementById('journal-view');
+
+  let entries;
+  let clients;
+  try {
+    [entries, clients] = await Promise.all([api('/api/journal'), api('/api/clients')]);
+  } catch (error) {
+    list.innerHTML = `<p class="muted">${escapeHtml(error.message)}</p>`;
+    return;
+  }
+
+  const clientSelect = document.getElementById('journal-client');
+  clientSelect.insertAdjacentHTML('beforeend', clients
+    .map((client) => `<option value="${client.id}">${escapeHtml(client.name)}</option>`)
+    .join(''));
+
+  if (state.clientId && !clients.some((client) => String(client.id) === state.clientId)) {
+    state.clientId = '';
+  }
+  if (state.clientId) setSelectValue(clientSelect, state.clientId);
+  enhanceSelects(viewEl);
+  setSelectActive(clientSelect, Boolean(state.clientId));
+
+  const allTags = [...new Set(entries.flatMap((entry) => entry.tags ?? []))]
+    .sort((a, b) => a.localeCompare(b, 'ru'));
+
+  function paintTags() {
+    if (allTags.length === 0) {
+      tagHost.innerHTML = '';
+      tagHost.hidden = true;
+      return;
+    }
+
+    tagHost.hidden = false;
+    tagHost.innerHTML = [
+      `<button type="button" class="chip${state.tag ? '' : ' is-active'}" data-tag="">Все теги</button>`,
+      ...allTags.map((tag) => `
+        <button type="button" class="chip${state.tag.toLowerCase() === tag.toLowerCase() ? ' is-active' : ''}"
+                data-tag="${escapeHtml(tag)}">#${escapeHtml(tag)}</button>
+      `),
+    ].join('');
+  }
+
+  function paintViewToggle() {
+    for (const button of viewHost.querySelectorAll('[data-view]')) {
+      const active = button.dataset.view === state.view;
+      button.classList.toggle('is-active', active);
+      button.setAttribute('aria-pressed', String(active));
+    }
+  }
+
+  function updateReset() {
+    resetButton.hidden = !(state.query.trim() || state.clientId || state.from || state.to || state.tag);
+  }
+
+  function syncUrl() {
+    const next = new URLSearchParams();
+    if (state.view === 'calendar') {
+      next.set('view', 'calendar');
+      next.set('month', state.month);
+      if (state.selectedDate) next.set('date', state.selectedDate);
+    }
+    if (state.query.trim()) next.set('q', state.query.trim());
+    if (state.clientId) next.set('client', state.clientId);
+    if (state.from) next.set('from', state.from);
+    if (state.to) next.set('to', state.to);
+    if (state.tag) next.set('tag', state.tag);
+
+    const queryString = next.toString();
+    history.replaceState(null, '', `#/journal${queryString ? `?${queryString}` : ''}`);
+  }
+
+  function filteredEntries() {
+    const query = state.query.trim().toLowerCase();
+
+    return entries.filter((entry) => {
+      if (state.clientId && String(entry.client_id) !== state.clientId) return false;
+      if (state.from && entry.entry_date < state.from) return false;
+      if (state.to && entry.entry_date > state.to) return false;
+      if (state.tag && !(entry.tags ?? []).some((tag) => tag.toLowerCase() === state.tag.toLowerCase())) {
+        return false;
+      }
+      if (!query) return true;
+
+      const haystack = [
+        entry.title,
+        entry.body,
+        entry.client_name,
+        entry.reading_title,
+        entry.card_name_ru,
+        entry.card_name_en,
+        ...(entry.tags ?? []),
+      ].filter(Boolean).join(' ').toLowerCase();
+
+      return haystack.includes(query);
+    });
+  }
+
+  function paintList(visible) {
+    counter.textContent = `${visible.length} ${plural(visible.length, ['запись', 'записи', 'записей'])}`;
+
+    if (visible.length === 0) {
+      list.innerHTML = entries.length === 0
+        ? '<div class="empty">Пока ни одной записи.<br><a href="#/journal/new">Добавить первую</a></div>'
+        : '<div class="empty">Ничего не найдено. Попробуйте изменить фильтры.</div>';
+      return;
+    }
+
+    const groups = [];
+    for (const entry of visible) {
+      const last = groups[groups.length - 1];
+      if (last && last.date === entry.entry_date) {
+        last.entries.push(entry);
+      } else {
+        groups.push({ date: entry.entry_date, entries: [entry] });
+      }
+    }
+
+    list.innerHTML = groups.map((group) => `
+      <div class="journal-day">
+        <span class="journal-day-date">${formatLongDate(group.date)}</span>
+        <span class="journal-day-count">${group.entries.length} ${plural(group.entries.length, ['запись', 'записи', 'записей'])}</span>
+      </div>
+      <div class="panel journal-entries">
+        ${group.entries.map(journalEntryRow).join('')}
+      </div>
+    `).join('');
+  }
+
+  function paintCalendar(visible) {
+    const [year, monthNumber] = state.month.split('-').map(Number);
+    const monthIndex = monthNumber - 1;
+    const firstDay = new Date(year, monthIndex, 1);
+    const offset = (firstDay.getDay() + 6) % 7;
+    const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
+    const totalCells = Math.ceil((offset + daysInMonth) / 7) * 7;
+    const weekdays = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+
+    const byDate = new Map();
+    for (const entry of visible) {
+      const dayEntries = byDate.get(entry.entry_date) ?? [];
+      dayEntries.push(entry);
+      byDate.set(entry.entry_date, dayEntries);
+    }
+
+    const monthEntries = visible.filter((entry) => entry.entry_date.startsWith(`${state.month}-`));
+    counter.textContent = `${monthEntries.length} ${plural(monthEntries.length, ['запись', 'записи', 'записей'])} · ${monthLabel(state.month)}`;
+
+    const cells = [];
+    for (let index = 0; index < totalCells; index += 1) {
+      const dayNumber = index - offset + 1;
+      const date = new Date(year, monthIndex, dayNumber);
+      const iso = isoFromParts(date.getFullYear(), date.getMonth(), date.getDate());
+      const inMonth = date.getMonth() === monthIndex;
+      const dayEntries = byDate.get(iso) ?? [];
+      const selected = state.selectedDate === iso;
+      const label = `${formatLongDate(iso)}${dayEntries.length
+        ? `, ${dayEntries.length} ${plural(dayEntries.length, ['запись', 'записи', 'записей'])}`
+        : ''}`;
+
+      cells.push(`
+        <div class="calendar-day${inMonth ? '' : ' is-outside'}${selected ? ' is-selected' : ''}${iso === today ? ' is-today' : ''}">
+          <button type="button" class="calendar-day-btn" data-calendar-date="${iso}"
+                  aria-label="${escapeHtml(label)}">
+            <span class="calendar-day-num">${date.getDate()}</span>
+            ${dayEntries.length > 0 ? `<span class="calendar-day-count">${dayEntries.length}</span>` : ''}
+          </button>
+          <a class="calendar-add" href="#/journal/new?date=${iso}"
+             title="Добавить запись на ${escapeHtml(formatLongDate(iso))}"
+             aria-label="Добавить запись на ${escapeHtml(formatLongDate(iso))}">+</a>
+        </div>
+      `);
+    }
+
+    const selectedEntries = state.selectedDate ? (byDate.get(state.selectedDate) ?? []) : [];
+    const selectedHtml = state.selectedDate
+      ? `
+        <div class="calendar-selected">
+          <div class="calendar-selected-head">
+            <div>
+              <div class="calendar-selected-title">${formatLongDate(state.selectedDate)}</div>
+              <div class="muted">${selectedEntries.length
+                ? `${selectedEntries.length} ${plural(selectedEntries.length, ['запись', 'записи', 'записей'])}`
+                : 'записей нет'}</div>
+            </div>
+            <div class="calendar-selected-actions">
+              <a class="btn btn-small" href="#/journal?from=${state.selectedDate}&to=${state.selectedDate}&view=list">Показать в списке</a>
+              <a class="btn btn-primary btn-small" href="#/journal/new?date=${state.selectedDate}">Добавить запись</a>
+            </div>
+          </div>
+          ${selectedEntries.length > 0
+            ? `<div class="panel journal-entries">${selectedEntries.map(journalEntryRow).join('')}</div>`
+            : `<div class="panel empty">На этот день записей нет. <a href="#/journal/new?date=${state.selectedDate}">Добавить</a></div>`}
+        </div>
+      `
+      : '<p class="calendar-hint">Нажмите на день, чтобы увидеть записи, или на «+» в углу дня, чтобы добавить новую.</p>';
+
+    list.innerHTML = `
+      <div class="panel journal-calendar">
+        <div class="calendar-head">
+          <h2 class="calendar-title">${monthLabel(state.month)}</h2>
+          <div class="calendar-nav">
+            <button class="btn btn-small" type="button" data-calendar-shift="-1" title="Предыдущий месяц">‹</button>
+            <button class="btn btn-small" type="button" data-calendar-today>Сегодня</button>
+            <button class="btn btn-small" type="button" data-calendar-shift="1" title="Следующий месяц">›</button>
+          </div>
+        </div>
+        <div class="calendar-grid">
+          ${weekdays.map((weekday) => `<div class="calendar-weekday">${weekday}</div>`).join('')}
+          ${cells.join('')}
+        </div>
+        ${selectedHtml}
+      </div>
+    `;
+  }
+
+  function paint() {
+    updateReset();
+    const visible = filteredEntries();
+    if (state.view === 'calendar') paintCalendar(visible);
+    else paintList(visible);
+    syncUrl();
+  }
+
+  tagHost.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-tag]');
+    if (!button) return;
+    state.tag = button.dataset.tag;
+    paintTags();
+    paint();
+  });
+
+  viewHost.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-view]');
+    if (!button || button.dataset.view === state.view) return;
+    state.view = button.dataset.view;
+    if (state.view === 'calendar' && !state.selectedDate && today.startsWith(state.month)) {
+      state.selectedDate = today;
+    }
+    paintViewToggle();
+    paint();
+  });
+
+  clientSelect.addEventListener('change', () => {
+    state.clientId = clientSelect.value;
+    setSelectActive(clientSelect, Boolean(clientSelect.value));
+    paint();
+  });
+
+  fromInput.addEventListener('change', (event) => {
+    state.from = event.target.value;
+    paint();
+  });
+
+  toInput.addEventListener('change', (event) => {
+    state.to = event.target.value;
+    paint();
+  });
+
+  search.addEventListener('input', () => {
+    state.query = search.value;
+    paint();
+  });
+
+  resetButton.addEventListener('click', () => {
+    state.query = '';
+    state.clientId = '';
+    state.from = '';
+    state.to = '';
+    state.tag = '';
+    search.value = '';
+    fromInput.value = '';
+    toInput.value = '';
+    setSelectValue(clientSelect, '');
+    setSelectActive(clientSelect, false);
+    paintTags();
+    paint();
+  });
+
+  list.addEventListener('click', (event) => {
+    const shift = event.target.closest('[data-calendar-shift]');
+    if (shift) {
+      state.month = shiftMonth(state.month, Number(shift.dataset.calendarShift));
+      if (!state.selectedDate.startsWith(state.month)) state.selectedDate = '';
+      paint();
+      return;
+    }
+
+    if (event.target.closest('[data-calendar-today]')) {
+      state.month = today.slice(0, 7);
+      state.selectedDate = today;
+      paint();
+      return;
+    }
+
+    const day = event.target.closest('[data-calendar-date]');
+    if (!day) return;
+    state.selectedDate = day.dataset.calendarDate;
+    state.month = state.selectedDate.slice(0, 7);
+    paint();
+  });
+
+  paintTags();
+  paintViewToggle();
+  paint();
+}
+
+async function renderJournalView(id) {
+  viewEl.innerHTML = '<p class="muted">Загрузка…</p>';
+
+  let entry;
+  try {
+    entry = await api(`/api/journal/${encodeURIComponent(id)}`);
+  } catch (error) {
+    viewEl.innerHTML = `
+      <div class="panel">
+        <p>${escapeHtml(error.message)}</p>
+        <p class="hint"><a href="#/journal">← ко всем записям</a></p>
+      </div>
+    `;
+    return;
+  }
+
+  const title = journalTitle(entry);
+  titleEl.textContent = title;
+  subtitleEl.textContent = formatLongDate(entry.entry_date);
+  document.title = `${title} · Таро`;
+
+  viewEl.innerHTML = `
+    <a class="back-link" href="#/journal">← все записи</a>
+
+    <div class="panel journal-view">
+      <div class="detail-head">
+        <p class="muted detail-info">${formatLongDate(entry.entry_date)}</p>
+        <div class="actions">
+          <a class="btn" href="#/journal/${entry.id}/edit">Редактировать</a>
+          <button class="btn btn-danger" type="button" id="journal-delete">Удалить</button>
+        </div>
+      </div>
+
+      ${journalLinksHtml(entry, { withImage: true })}
+      ${journalTagsHtml(entry.tags, true)}
+      ${entry.body ? `<div class="notes journal-body">${escapeHtml(entry.body)}</div>` : ''}
+    </div>
+  `;
+
+  document.getElementById('journal-delete').addEventListener('click', async () => {
+    if (!confirm('Удалить запись дневника? Это действие нельзя отменить.')) return;
+    try {
+      await api(`/api/journal/${entry.id}`, { method: 'DELETE' });
+      location.hash = '#/journal';
+    } catch (error) {
+      alert(error.message);
+    }
+  });
+}
+
+async function renderJournalForm(id, options = {}) {
+  const isEdit = Boolean(id);
+  let entry = {
+    entry_date: todayIso(),
+    title: '',
+    body: '',
+    tags: [],
+    card_id: '',
+    reading_id: '',
+    client_id: '',
+  };
+
+  viewEl.innerHTML = '<p class="muted">Загрузка…</p>';
+
+  let clients;
+  let readings;
+  let cards;
+  try {
+    const tasks = [api('/api/clients'), api('/api/readings'), getCards()];
+    if (isEdit) tasks.push(api(`/api/journal/${encodeURIComponent(id)}`));
+
+    const [clientsData, readingsData, cardsData, entryData] = await Promise.all(tasks);
+    clients = clientsData;
+    readings = readingsData;
+    cards = cardsData;
+    if (isEdit) entry = entryData;
+
+    if (!isEdit) {
+      if (options.client && clients.some((client) => String(client.id) === String(options.client))) {
+        entry.client_id = Number(options.client);
+      }
+      if (options.reading && readings.some((reading) => String(reading.id) === String(options.reading))) {
+        entry.reading_id = Number(options.reading);
+      }
+      if (options.card && cards.some((card) => String(card.id) === String(options.card))) {
+        entry.card_id = Number(options.card);
+      }
+      if (options.date && /^\d{4}-\d{2}-\d{2}$/.test(options.date)) {
+        entry.entry_date = options.date;
+      }
+      if (!entry.client_id && entry.reading_id) {
+        const linked = readings.find((reading) => String(reading.id) === String(entry.reading_id));
+        if (linked?.client_id) entry.client_id = linked.client_id;
+      }
+    }
+  } catch (error) {
+    viewEl.innerHTML = `
+      <div class="panel">
+        <p>${escapeHtml(error.message)}</p>
+        <p class="hint"><a href="#/journal">← ко всем записям</a></p>
+      </div>
+    `;
+    return;
+  }
+
+  titleEl.textContent = isEdit ? 'Редактирование записи' : 'Новая запись';
+  subtitleEl.textContent = isEdit ? formatLongDate(entry.entry_date) : 'Дневник практики';
+  document.title = `${titleEl.textContent} · Таро`;
+
+  const backHref = isEdit ? `#/journal/${entry.id}` : '#/journal';
+
+  const clientOptions = clients.map((client) => `
+    <option value="${client.id}"${String(entry.client_id ?? '') === String(client.id) ? ' selected' : ''}>
+      ${escapeHtml(client.name)}
+    </option>
+  `).join('');
+
+  const readingOptions = readings.map((reading) => {
+    const label = [
+      formatDate(reading.reading_date),
+      reading.title || reading.question || 'Без названия',
+      reading.client_name,
+    ].filter(Boolean).join(' · ');
+    return `
+      <option value="${reading.id}"${String(entry.reading_id ?? '') === String(reading.id) ? ' selected' : ''}>
+        ${escapeHtml(label)}
+      </option>
+    `;
+  }).join('');
+
+  const cardGroups = [
+    { label: 'Старшие арканы', items: cards.filter((card) => card.arcana === 'major') },
+    { label: 'Жезлы', items: cards.filter((card) => card.suit === 'wands') },
+    { label: 'Кубки', items: cards.filter((card) => card.suit === 'cups') },
+    { label: 'Мечи', items: cards.filter((card) => card.suit === 'swords') },
+    { label: 'Пентакли', items: cards.filter((card) => card.suit === 'pentacles') },
+  ];
+
+  const cardOptions = cardGroups.map((group) => `
+    <optgroup label="${group.label}">
+      ${group.items.map((card) => `
+        <option value="${card.id}"${String(entry.card_id ?? '') === String(card.id) ? ' selected' : ''}>
+          ${escapeHtml(card.name_ru)} (${escapeHtml(card.name_en)})
+        </option>
+      `).join('')}
+    </optgroup>
+  `).join('');
+
+  viewEl.innerHTML = `
+    <a class="back-link" href="${backHref}">← назад</a>
+
+    <form class="panel form journal-form" id="journal-form" novalidate>
+      <div class="form-row">
+        <label>Дата <span class="req">*</span>
+          <input name="entry_date" type="date" required value="${entry.entry_date ?? todayIso()}">
+        </label>
+        <label>Заголовок
+          <input name="title" maxlength="200" placeholder="О чём запись"
+                 value="${escapeHtml(entry.title ?? '')}">
+        </label>
+      </div>
+
+      <label>Текст
+        <textarea name="body" rows="12" maxlength="10000"
+                  placeholder="Наблюдения, мысли, повторяющиеся символы">${escapeHtml(entry.body ?? '')}</textarea>
+      </label>
+      <p class="field-hint muted">Максимум 10000 символов. Нужен заголовок или текст.</p>
+
+      <label>Теги
+        <input name="tags" maxlength="1000" placeholder="например: карта дня, работа, повторяется"
+               value="${escapeHtml((entry.tags ?? []).join(', '))}">
+      </label>
+      <p class="field-hint muted">Через запятую. До 20 тегов, каждый до 40 символов.</p>
+
+      <div class="form-row">
+        <label>Клиент
+          <select name="client_id">
+            <option value="">Без клиента</option>
+            ${clientOptions}
+          </select>
+        </label>
+        <label>Расклад
+          <select name="reading_id">
+            <option value="">Без расклада</option>
+            ${readingOptions}
+          </select>
+        </label>
+      </div>
+
+      <label>Карта
+        <select name="card_id">
+          <option value="">Без карты</option>
+          ${cardOptions}
+        </select>
+      </label>
+
+      <p class="form-error" id="form-error"></p>
+      <div class="form-actions">
+        <button class="btn btn-primary" type="submit">${isEdit ? 'Сохранить' : 'Добавить'}</button>
+        <a class="btn" href="${backHref}">Отмена</a>
+        ${isEdit ? '<button class="btn btn-danger" type="button" id="journal-delete">Удалить</button>' : ''}
+      </div>
+    </form>
+  `;
+
+  const form = document.getElementById('journal-form');
+  const errorEl = document.getElementById('form-error');
+  const submitButton = form.querySelector('button[type="submit"]');
+  enhanceSelects(form);
+
+  form.elements.reading_id.addEventListener('change', () => {
+    if (form.elements.client_id.value) return;
+    const linked = readings.find((reading) => String(reading.id) === form.elements.reading_id.value);
+    if (linked?.client_id) setSelectValue(form.elements.client_id, String(linked.client_id));
+  });
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(form).entries());
+
+    if (!String(data.entry_date ?? '').trim()) {
+      errorEl.textContent = 'Укажите дату записи.';
+      return;
+    }
+    if (!String(data.title ?? '').trim() && !String(data.body ?? '').trim()) {
+      errorEl.textContent = 'Заполните заголовок или текст записи.';
+      return;
+    }
+
+    submitButton.disabled = true;
+    errorEl.textContent = '';
+
+    try {
+      const saved = isEdit
+        ? await api(`/api/journal/${id}`, { method: 'PUT', body: JSON.stringify(data) })
+        : await api('/api/journal', { method: 'POST', body: JSON.stringify(data) });
+      location.hash = `#/journal/${saved.id}`;
+    } catch (error) {
+      errorEl.textContent = error.message;
+      submitButton.disabled = false;
+    }
+  });
+
+  const deleteButton = document.getElementById('journal-delete');
+  if (deleteButton) {
+    deleteButton.addEventListener('click', async () => {
+      if (!confirm('Удалить запись дневника? Это действие нельзя отменить.')) return;
+      try {
+        await api(`/api/journal/${entry.id}`, { method: 'DELETE' });
+        location.hash = '#/journal';
+      } catch (error) {
+        alert(error.message);
+      }
+    });
+  }
+}
+
+/* ---------- Поиск и статистика ---------- */
+
+const SEARCH_SCOPES = [
+  { id: 'all', label: 'Всё' },
+  { id: 'cards', label: 'Карты' },
+  { id: 'clients', label: 'Клиенты' },
+  { id: 'readings', label: 'Расклады' },
+  { id: 'journal', label: 'Дневник' },
+];
+
+function normalizeSearchText(value) {
+  return String(value ?? '').toLowerCase().replace(/ё/g, 'е');
+}
+
+function searchSnippet(value, query, max = 150) {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+
+  const haystack = normalizeSearchText(text);
+  const index = haystack.indexOf(normalizeSearchText(query));
+  if (index === -1) return journalExcerpt(text, max);
+
+  const start = Math.max(0, index - Math.floor(max / 3));
+  const end = Math.min(text.length, start + max);
+  const part = text.slice(start, end).trim();
+  return `${start > 0 ? '…' : ''}${part}${end < text.length ? '…' : ''}`;
+}
+
+function matchesSearch(values, query) {
+  return normalizeSearchText(values.filter(Boolean).join(' ')).includes(normalizeSearchText(query));
+}
+
+function pickSnippet(values, query, max = 150) {
+  const needle = normalizeSearchText(query);
+  const source = values
+    .filter(Boolean)
+    .map((value) => String(value))
+    .find((text) => normalizeSearchText(text).includes(needle));
+  return source ? searchSnippet(source, query, max) : '';
+}
+
+function searchTabs(active) {
+  return `
+    <div class="section-tabs">
+      <a class="tab${active === 'search' ? ' is-active' : ''}" href="#/search">Поиск</a>
+      <a class="tab${active === 'stats' ? ' is-active' : ''}" href="#/search?tab=stats">Статистика</a>
+    </div>
+  `;
+}
+
+function statCard(value, label) {
+  return `
+    <div class="stat">
+      <div class="stat-value">${value}</div>
+      <div class="stat-label">${label}</div>
+    </div>
+  `;
+}
+
+function cardSearchRow(card, query) {
+  const personal = (card.interpretations ?? [])
+    .map((item) => `${item.title ?? ''} ${item.body}`)
+    .join(' ');
+  const keywords = (card.keywords ?? []).join(' · ');
+  const themes = (card.themes ?? []).join(' · ');
+
+  const haystack = [
+    card.name_ru,
+    card.name_en,
+    card.slug,
+    keywords,
+    themes,
+    card.upright,
+    card.reversed,
+    card.notes,
+    personal,
+  ];
+
+  if (!matchesSearch(haystack, query)) return null;
+
+  const arcana = card.arcana === 'major' ? 'Старший аркан' : SUITS[card.suit] ?? 'Младший аркан';
+  const snippet = pickSnippet([card.notes, personal, card.upright, card.reversed, keywords, themes], query)
+    || journalExcerpt(card.upright ?? card.notes ?? '', 150);
+  const shortKeywords = (card.keywords ?? []).slice(0, 5).join(' · ');
+
+  return `
+    <a class="search-row" href="#/cards/${card.id}">
+      <img class="search-thumb" src="${card.image}" alt="" loading="lazy"
+           onerror="this.onerror=null;this.src='cards/placeholder.svg'">
+      <div class="search-row-main">
+        <div class="search-row-title">
+          ${escapeHtml(card.name_ru)}
+          <span class="search-row-alt">(${escapeHtml(card.name_en)})</span>
+        </div>
+        ${snippet ? `<div class="search-snippet">${escapeHtml(snippet)}</div>` : ''}
+        <div class="search-row-meta">${escapeHtml([arcana, shortKeywords].filter(Boolean).join(' · '))}</div>
+      </div>
+    </a>
+  `;
+}
+
+function clientSearchRow(client, query, counts = { readings: 0, journal: 0 }) {
+  const birth = client.birth_date ? `д.р. ${formatDate(client.birth_date)}` : '';
+  const haystack = [client.name, client.contact, birth, client.notes];
+  if (!matchesSearch(haystack, query)) return null;
+
+  const snippet = pickSnippet([client.notes, client.contact, birth], query)
+    || journalExcerpt(client.notes ?? client.contact ?? '', 150);
+  const meta = [
+    `${counts.readings} ${plural(counts.readings, ['расклад', 'расклада', 'раскладов'])}`,
+    `${counts.journal} ${plural(counts.journal, ['запись', 'записи', 'записей'])}`,
+    client.contact ? `контакт: ${client.contact}` : '',
+  ].filter(Boolean).join(' · ');
+  const initial = (client.name ?? '?').trim().charAt(0).toUpperCase() || '?';
+
+  return `
+    <a class="search-row" href="#/clients/${client.id}">
+      <span class="search-avatar" aria-hidden="true">${escapeHtml(initial)}</span>
+      <div class="search-row-main">
+        <div class="search-row-title">${escapeHtml(client.name)}</div>
+        ${snippet ? `<div class="search-snippet">${escapeHtml(snippet)}</div>` : ''}
+        <div class="search-row-meta">${escapeHtml(meta)}</div>
+      </div>
+    </a>
+  `;
+}
+
+function readingSearchRow(reading, query) {
+  const statusLabel = READING_STATUS_LABELS[reading.status] ?? reading.status;
+  const haystack = [
+    reading.title,
+    reading.question,
+    reading.client_name,
+    reading.spread_name,
+    reading.interpretation,
+    reading.summary,
+    statusLabel,
+    reading.reading_date,
+    formatDate(reading.reading_date),
+  ];
+  if (!matchesSearch(haystack, query)) return null;
+
+  const title = reading.title || reading.question || 'Без названия';
+  const snippetSources = [];
+  if (reading.question && reading.question !== title) snippetSources.push(reading.question);
+  snippetSources.push(reading.interpretation, reading.summary);
+  const snippet = pickSnippet(snippetSources, query);
+
+  const spreadCount = Number((reading.spread_name?.match(/^(\d+)\s+карт/) ?? [])[1]);
+  const cardsLabel = reading.cards_count > 0
+    ? `${reading.cards_count} ${plural(reading.cards_count, ['карта', 'карты', 'карт'])}`
+    : '';
+  const meta = [
+    reading.client_name || 'для себя',
+    reading.spread_name,
+    spreadCount === reading.cards_count ? '' : cardsLabel,
+  ].filter(Boolean).join(' · ');
+
+  return `
+    <a class="search-row" href="#/readings/${reading.id}">
+      <span class="search-date">${formatDate(reading.reading_date)}</span>
+      <div class="search-row-main">
+        <div class="search-row-title">${escapeHtml(title)}</div>
+        ${snippet ? `<div class="search-snippet">${escapeHtml(snippet)}</div>` : ''}
+        <div class="search-row-meta">${escapeHtml(meta)}</div>
+      </div>
+      <span class="status-badge status-${reading.status}">${READING_STATUS_LABELS[reading.status] ?? reading.status}</span>
+    </a>
+  `;
+}
+
+function journalSearchRow(entry, query) {
+  const title = journalTitle(entry);
+  const haystack = [
+    entry.title,
+    entry.body,
+    entry.client_name,
+    entry.reading_title,
+    entry.card_name_ru,
+    entry.card_name_en,
+    ...(entry.tags ?? []),
+  ];
+  if (!matchesSearch(haystack, query)) return null;
+
+  const snippet = pickSnippet([entry.body, entry.title], query)
+    || journalExcerpt(entry.body ?? '', 150);
+  const meta = [
+    formatLongDate(entry.entry_date),
+    entry.client_name ? `клиент: ${entry.client_name}` : '',
+    entry.card_name_ru
+      ? `карта: ${entry.card_name_ru}${entry.card_name_en ? ` (${entry.card_name_en})` : ''}`
+      : '',
+    ...(entry.tags ?? []).map((tag) => `#${tag}`),
+  ].filter(Boolean).join(' · ');
+
+  return `
+    <a class="search-row" href="#/journal/${entry.id}">
+      <span class="search-date">${formatDate(entry.entry_date)}</span>
+      <div class="search-row-main">
+        <div class="search-row-title">${escapeHtml(title)}</div>
+        ${snippet ? `<div class="search-snippet">${escapeHtml(snippet)}</div>` : ''}
+        <div class="search-row-meta">${escapeHtml(meta)}</div>
+      </div>
+    </a>
+  `;
+}
+
+function searchGroup(title, rows, noun) {
+  if (rows.length === 0) return '';
+  return `
+    <section class="search-group">
+      <div class="search-group-head">
+        <h2>${title}</h2>
+        <span class="muted">${rows.length} ${plural(rows.length, noun)}</span>
+      </div>
+      <div class="panel list-panel">${rows.join('')}</div>
+    </section>
+  `;
+}
+
+async function renderSearch(params = new URLSearchParams()) {
+  const initialQuery = params.get('q') ?? '';
+
+  titleEl.textContent = 'Поиск и статистика';
+  subtitleEl.textContent = 'Поиск по всей мастерской';
+  document.title = 'Поиск · Таро';
+
+  viewEl.innerHTML = `
+    ${searchTabs('search')}
+    <div class="panel search-box">
+      <input class="search search-global" id="global-search" type="search" autocomplete="off"
+             placeholder="Карта, клиент, вопрос, текст трактовки, запись или тег"
+             value="${escapeHtml(initialQuery)}">
+      <div class="search-box-foot">
+        <div class="chips" id="search-scope">
+          ${SEARCH_SCOPES.map((scope, index) => `
+            <button type="button" class="chip${index === 0 ? ' is-active' : ''}" data-scope="${scope.id}">
+              ${scope.label}
+            </button>
+          `).join('')}
+        </div>
+        <span class="hint">Ищет по названиям, заметкам, трактовкам, тегам и привязкам</span>
+        <button class="btn btn-small reset-filters" type="button" id="search-reset" hidden>Сбросить фильтры</button>
+      </div>
+    </div>
+    <div id="search-output"><p class="muted">Загрузка…</p></div>
+  `;
+
+  const input = document.getElementById('global-search');
+  const output = document.getElementById('search-output');
+  const scopeHost = document.getElementById('search-scope');
+  const resetButton = document.getElementById('search-reset');
+
+  let data;
+  try {
+    const [cards, clients, readings, journal] = await Promise.all([
+      getCards(),
+      api('/api/clients'),
+      api('/api/readings'),
+      api('/api/journal'),
+    ]);
+    data = { cards, clients, readings, journal };
+  } catch (error) {
+    output.innerHTML = `<div class="panel"><p>${escapeHtml(error.message)}</p></div>`;
+    return;
+  }
+
+  const clientCounts = new Map();
+  for (const client of data.clients) clientCounts.set(client.id, { readings: 0, journal: 0 });
+  for (const reading of data.readings) {
+    if (reading.client_id && clientCounts.has(reading.client_id)) {
+      clientCounts.get(reading.client_id).readings += 1;
+    }
+  }
+  for (const entry of data.journal) {
+    if (entry.client_id && clientCounts.has(entry.client_id)) {
+      clientCounts.get(entry.client_id).journal += 1;
+    }
+  }
+
+  const state = { scope: 'all' };
+
+  function setScope(scope) {
+    state.scope = scope;
+    for (const chip of scopeHost.querySelectorAll('[data-scope]')) {
+      chip.classList.toggle('is-active', chip.dataset.scope === scope);
+    }
+  }
+
+  function updateUrl() {
+    const value = input.value.trim();
+    const hash = value ? `#/search?q=${encodeURIComponent(value)}` : '#/search';
+    history.replaceState(null, '', hash);
+  }
+
+  function paint() {
+    resetButton.hidden = state.scope === 'all' && !input.value.trim();
+    const query = input.value.trim();
+    const normalized = normalizeSearchText(query);
+
+    if (!normalized) {
+      const scopeCards = [
+        { id: 'cards', label: 'Карты', count: data.cards.length, noun: ['карта', 'карты', 'карт'] },
+        { id: 'clients', label: 'Клиенты', count: data.clients.length, noun: ['клиент', 'клиента', 'клиентов'] },
+        { id: 'readings', label: 'Расклады', count: data.readings.length, noun: ['расклад', 'расклада', 'раскладов'] },
+        { id: 'journal', label: 'Дневник', count: data.journal.length, noun: ['запись', 'записи', 'записей'] },
+      ];
+
+      output.innerHTML = `
+        <div class="panel search-intro">
+          <h2>Что можно найти</h2>
+          <p class="muted">Названия и значения карт, имена и заметки клиентов, вопросы и трактовки раскладов, записи дневника и теги.</p>
+          <div class="search-scope-cards">
+            ${scopeCards.map((item) => `
+              <button type="button" class="scope-card" data-scope="${item.id}">
+                <strong>${item.count}</strong>
+                <span>${plural(item.count, item.noun)}</span>
+              </button>
+            `).join('')}
+          </div>
+          <p class="hint">Например: «деньги», «Надежда», «карта дня».</p>
+        </div>
+      `;
+      return;
+    }
+
+    const cards = state.scope === 'all' || state.scope === 'cards'
+      ? data.cards.map((card) => cardSearchRow(card, normalized)).filter(Boolean)
+      : [];
+    const clients = state.scope === 'all' || state.scope === 'clients'
+      ? data.clients.map((client) => clientSearchRow(client, normalized, clientCounts.get(client.id))).filter(Boolean)
+      : [];
+    const readings = state.scope === 'all' || state.scope === 'readings'
+      ? data.readings.map((reading) => readingSearchRow(reading, normalized)).filter(Boolean)
+      : [];
+    const journal = state.scope === 'all' || state.scope === 'journal'
+      ? data.journal.map((entry) => journalSearchRow(entry, normalized)).filter(Boolean)
+      : [];
+
+    const total = cards.length + clients.length + readings.length + journal.length;
+
+    if (total === 0) {
+      output.innerHTML = `
+        <div class="panel">
+          <div class="empty">
+            По запросу «${escapeHtml(query)}» ничего не найдено.<br>
+            Попробуйте другое слово или выберите другой раздел.
+          </div>
+        </div>
+      `;
+      return;
+    }
+
+    output.innerHTML = `
+      <p class="result-count muted">${total} ${plural(total, ['совпадение', 'совпадения', 'совпадений'])} по запросу «${escapeHtml(query)}»</p>
+      ${searchGroup('Карты', cards, ['карта', 'карты', 'карт'])}
+      ${searchGroup('Клиенты', clients, ['клиент', 'клиента', 'клиентов'])}
+      ${searchGroup('Расклады', readings, ['расклад', 'расклада', 'раскладов'])}
+      ${searchGroup('Дневник', journal, ['запись', 'записи', 'записей'])}
+    `;
+  }
+
+  scopeHost.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-scope]');
+    if (!button) return;
+    setScope(button.dataset.scope);
+    paint();
+  });
+
+  output.addEventListener('click', (event) => {
+    const card = event.target.closest('.scope-card');
+    if (!card) return;
+    setScope(card.dataset.scope);
+    input.focus();
+  });
+
+  input.addEventListener('input', () => {
+    updateUrl();
+    paint();
+  });
+
+  resetButton.addEventListener('click', () => {
+    state.scope = 'all';
+    input.value = '';
+    setScope('all');
+    updateUrl();
+    input.focus();
+    paint();
+  });
+
+  paint();
+}
+
+async function renderStatistics() {
+  titleEl.textContent = 'Поиск и статистика';
+  subtitleEl.textContent = 'Закономерности практики';
+  document.title = 'Статистика · Таро';
+
+  viewEl.innerHTML = `${searchTabs('stats')}<p class="muted">Считаем…</p>`;
+
+  let stats;
+  try {
+    stats = await api('/api/statistics');
+  } catch (error) {
+    viewEl.innerHTML = `${searchTabs('stats')}<div class="panel"><p>${escapeHtml(error.message)}</p></div>`;
+    return;
+  }
+
+  const totals = stats.totals;
+  const maxCard = stats.cards[0]?.total ?? 1;
+  const maxTheme = stats.themes[0]?.count ?? 1;
+  const maxTag = stats.journalTags[0]?.count ?? 1;
+
+  const cardRows = stats.cards.map((card) => {
+    const width = Math.max(4, Math.round((card.total / maxCard) * 100));
+    const meta = [
+      card.upright ? `${card.upright} прям.` : '',
+      card.reversed ? `${card.reversed} перев.` : '',
+    ].filter(Boolean).join(' · ');
+
+    return `
+      <a class="freq-row" href="#/cards/${card.id}">
+        <img class="freq-thumb" src="${card.image}" alt="" loading="lazy"
+             onerror="this.onerror=null;this.src='cards/placeholder.svg'">
+        <div class="freq-main">
+          <div class="freq-top">
+            <span class="freq-name">
+              ${escapeHtml(card.name_ru)}
+              <span class="freq-name-en">(${escapeHtml(card.name_en)})</span>
+            </span>
+            <span class="freq-count">${card.total}</span>
+          </div>
+          <div class="freq-bar"><span style="width:${width}%"></span></div>
+          <div class="freq-meta">${escapeHtml(meta || '—')}</div>
+        </div>
+      </a>
+    `;
+  }).join('');
+
+  const clientRows = stats.clients.map((client) => {
+    const meta = [
+      `${client.readings} ${plural(client.readings, ['расклад', 'расклада', 'раскладов'])}`,
+      `${client.cards} ${plural(client.cards, ['карта', 'карты', 'карт'])}`,
+      `${client.journal} ${plural(client.journal, ['запись', 'записи', 'записей'])}`,
+    ].join(' · ');
+    const last = client.last_reading ? `последний ${formatDate(client.last_reading)}` : 'раскладов нет';
+
+    return `
+      <a class="stat-row" href="#/clients/${client.id}">
+        <div class="stat-row-main">
+          <div class="list-title">${escapeHtml(client.name)}</div>
+          <div class="list-sub">${meta}</div>
+        </div>
+        <div class="stat-row-side">${last}</div>
+      </a>
+    `;
+  }).join('');
+
+  const themeRows = stats.themes.map((item) => {
+    const width = Math.max(4, Math.round((item.count / maxTheme) * 100));
+    return `
+      <div class="theme-stat">
+        <span class="theme">${escapeHtml(item.theme)}</span>
+        <span class="theme-bar"><span style="width:${width}%"></span></span>
+        <span class="theme-count">${item.count}</span>
+      </div>
+    `;
+  }).join('');
+
+  const tagRows = stats.journalTags.map((item) => {
+    const width = Math.max(4, Math.round((item.count / maxTag) * 100));
+    return `
+      <a class="theme-stat theme-stat-link" href="#/journal?tag=${encodeURIComponent(item.tag)}">
+        <span class="theme">#${escapeHtml(item.tag)}</span>
+        <span class="theme-bar"><span style="width:${width}%"></span></span>
+        <span class="theme-count">${item.count}</span>
+      </a>
+    `;
+  }).join('');
+
+  const unusedCards = totals.cards - stats.cards.length;
+
+  viewEl.innerHTML = `
+    ${searchTabs('stats')}
+
+    <div class="stats">
+      ${statCard(totals.cards, 'Карт в базе')}
+      ${statCard(totals.clients, 'Клиентов')}
+      ${statCard(totals.readings, 'Раскладов')}
+      ${statCard(totals.journal, 'Записей дневника')}
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Расклады по статусам</h2>
+        <span class="muted">${totals.readings} ${plural(totals.readings, ['расклад', 'расклада', 'раскладов'])}</span>
+      </div>
+      <div class="status-summary">
+        <span class="status-badge status-draft">черновики · ${totals.draft}</span>
+        <span class="status-badge status-done">завершённые · ${totals.done}</span>
+        <span class="status-badge status-archived">архив · ${totals.archived}</span>
+      </div>
+      <p class="hint">Расклады для себя: ${totals.selfReadings}.</p>
+    </div>
+
+    <div class="stats-columns">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Частота карт</h2>
+          <span class="muted">${stats.cards.length} из ${totals.cards}</span>
+        </div>
+        ${stats.cards.length
+          ? `<div class="freq-list">${cardRows}</div>`
+          : '<div class="empty">Пока ни одна карта не выпадала.<br>Добавьте карты в расклад.</div>'}
+        ${unusedCards > 0 && stats.cards.length > 0
+          ? `<p class="hint">Ещё ${unusedCards} ${plural(unusedCards, ['карта', 'карты', 'карт'])} пока не выпадали.</p>`
+          : ''}
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Клиенты</h2>
+          <a class="panel-link" href="#/clients">все клиенты →</a>
+        </div>
+        ${stats.clients.length
+          ? `<div class="stat-list">${clientRows}</div>`
+          : '<div class="empty">Пока нет клиентов. <a href="#/clients/new">Добавить первого</a></div>'}
+      </div>
+    </div>
+
+    <div class="stats-columns">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Темы карт</h2>
+          <span class="muted">по выпавшим картам</span>
+        </div>
+        ${stats.themes.length
+          ? `<div class="theme-stats">${themeRows}</div>`
+          : '<div class="empty">Пока нет данных — темы считаются по картам из раскладов.</div>'}
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Теги дневника</h2>
+          <a class="panel-link" href="#/journal">весь дневник →</a>
+        </div>
+        ${stats.journalTags.length
+          ? `<div class="theme-stats">${tagRows}</div>`
+          : '<div class="empty">Пока нет тегов. <a href="#/journal/new">Добавить запись</a></div>'}
+      </div>
+    </div>
+  `;
+}
+
+/* ---------- Заглушки ---------- */
+
+function renderStub(section) {
+  const items = (section.planned ?? []).map((text) => `<li>${text}</li>`).join('');
+  viewEl.innerHTML = `
+    <div class="panel stub">
+      <span class="stub-badge">раздел в разработке</span>
+      <h2>${section.title}</h2>
+      <p class="muted">Появится на одном из следующих шагов. Вот что здесь будет:</p>
+      <ul class="stub-list">${items}</ul>
+    </div>
+    <p class="hint">А пока можно вернуться в <a href="#/overview">Обзор</a>.</p>
+  `;
+}
+
+/* ---------- Маршрутизация ---------- */
+
+function route() {
+  const hash = location.hash.replace(/^#\/?/, '') || 'overview';
+  const [raw, queryString = ''] = hash.split('?');
+  const params = new URLSearchParams(queryString);
+  const [id, action, sub] = raw.split('/');
+  const section = SECTIONS.find((item) => item.id === id) ?? SECTIONS[0];
+
+  titleEl.textContent = section.title;
+  subtitleEl.textContent = section.subtitle;
+  document.title = `${section.title} · Таро`;
+  renderNav(section.id);
+
+  if (section.id === 'overview') {
+    renderOverview();
+  } else if (section.id === 'cards' && action && sub === 'edit') {
+    renderCardEdit(action);
+  } else if (section.id === 'cards' && action) {
+    renderCardDetail(action);
+  } else if (section.id === 'cards') {
+    renderCards();
+  } else if (section.id === 'clients' && action === 'new') {
+    renderClientForm(null);
+  } else if (section.id === 'clients' && action && sub === 'edit') {
+    renderClientForm(action);
+  } else if (section.id === 'clients' && action) {
+    renderClientDetail(action);
+  } else if (section.id === 'clients') {
+    renderClients();
+  } else if (section.id === 'readings' && action === 'new') {
+    renderReadingForm(null, { clientId: params.get('client') });
+  } else if (section.id === 'readings' && action && sub === 'edit') {
+    renderReadingForm(action);
+  } else if (section.id === 'readings' && action) {
+    renderReadingView(action);
+  } else if (section.id === 'readings') {
+    renderReadings();
+  } else if (section.id === 'journal' && action === 'new') {
+    renderJournalForm(null, {
+      client: params.get('client'),
+      reading: params.get('reading'),
+      card: params.get('card'),
+      date: params.get('date'),
+    });
+  } else if (section.id === 'journal' && action && sub === 'edit') {
+    renderJournalForm(action);
+  } else if (section.id === 'journal' && action) {
+    renderJournalView(action);
+  } else if (section.id === 'journal') {
+    renderJournal(params);
+  } else if (section.id === 'search') {
+    if (params.get('tab') === 'stats') renderStatistics();
+    else renderSearch(params);
+  } else {
+    renderStub(section);
+  }
+
+  viewEl.classList.remove('is-entering');
+  void viewEl.offsetWidth;
+  viewEl.classList.add('is-entering');
+}
+
+async function checkServer() {
+  const dot = document.getElementById('status-dot');
+  const text = document.getElementById('status-text');
+  try {
+    const response = await fetch('/api/health');
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const health = await response.json();
+    dot.classList.add('is-ok');
+    text.textContent = `сервер работает · схема v${health.schemaVersion}`;
+  } catch {
+    dot.classList.add('is-error');
+    text.textContent = 'сервер не отвечает';
+  }
+}
+
+window.addEventListener('hashchange', route);
+route();
+checkServer();

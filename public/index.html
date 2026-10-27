@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Таро · рабочее место</title>
+  <meta name="theme-color" content="#131019">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="favicon.svg">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">✦</div>
+        <div>
+          <div class="brand-title">Таро</div>
+          <div class="brand-sub">рабочее место</div>
+        </div>
+      </div>
+
+      <nav class="nav" id="nav" aria-label="Разделы"></nav>
+
+      <div class="sidebar-foot">
+        <span class="status-dot" id="status-dot"></span>
+        <span id="status-text">проверка сервера…</span>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <h1 id="page-title">Обзор</h1>
+        <p class="muted" id="page-subtitle"></p>
+      </header>
+      <section class="view" id="view"></section>
+    </main>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
