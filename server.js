@@ -165,9 +165,9 @@ const READING_TEXT_MAX = 2000;
 // Своя трактовка карты — до тысячи символов.
 const CARD_INTERPRETATION_TEXT_MAX = 1000;
 
-// Запись дневника: заголовок короткий, текст — как заметки к карте.
+// Запись дневника: заголовок короткий, текст — до трёх тысяч символов.
 const JOURNAL_TITLE_MAX = 200;
-const JOURNAL_TEXT_MAX = 10000;
+const JOURNAL_TEXT_MAX = 3000;
 const JOURNAL_TAG_MAX = 40;
 const JOURNAL_TAGS_MAX = 20;
 

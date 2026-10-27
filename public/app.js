@@ -3011,10 +3011,10 @@ async function renderJournalForm(id, options = {}) {
       </div>
 
       <label>Текст
-        <textarea name="body" rows="12" maxlength="10000"
+        <textarea name="body" rows="12" maxlength="3000"
                   placeholder="Наблюдения, мысли, повторяющиеся символы">${escapeHtml(entry.body ?? '')}</textarea>
       </label>
-      <p class="field-hint muted">Максимум 10000 символов. Нужен заголовок или текст.</p>
+      <p class="field-hint muted">Максимум 3000 символов. Нужен заголовок или текст.</p>
 
       <label>Теги
         <input name="tags" maxlength="1000" placeholder="например: карта дня, работа, повторяется"
