@@ -516,47 +516,6 @@ async function renderOverview() {
       </div>
       <div class="latest-readings" id="latest-journal"><p class="muted">Загрузка…</p></div>
     </div>
-
-    <div class="panel">
-      <h2>Как идёт работа</h2>
-      <ol class="roadmap">
-        <li class="is-done">
-          <span class="roadmap-step">Шаг 1</span>
-          <span class="roadmap-text">Фундамент: сервер, база данных, навигация</span>
-          <span class="roadmap-badge">готово</span>
-        </li>
-        <li class="is-done">
-          <span class="roadmap-step">Шаг 2</span>
-          <span class="roadmap-text">Справочник 78 карт с изображениями</span>
-          <span class="roadmap-badge">готово</span>
-        </li>
-        <li class="is-done">
-          <span class="roadmap-step">Шаг 3</span>
-          <span class="roadmap-text">Клиенты</span>
-          <span class="roadmap-badge">готово</span>
-        </li>
-        <li class="is-done">
-          <span class="roadmap-step">Шаг 4</span>
-          <span class="roadmap-text">Расклады с картами и трактовкой</span>
-          <span class="roadmap-badge">готово</span>
-        </li>
-        <li class="is-done">
-          <span class="roadmap-step">Шаг 5</span>
-          <span class="roadmap-text">Свои трактовки в базе знаний</span>
-          <span class="roadmap-badge">готово</span>
-        </li>
-        <li class="is-done">
-          <span class="roadmap-step">Шаг 6</span>
-          <span class="roadmap-text">Дневник</span>
-          <span class="roadmap-badge">готово</span>
-        </li>
-        <li class="is-done">
-          <span class="roadmap-step">Шаг 7</span>
-          <span class="roadmap-text">Поиск и статистика</span>
-          <span class="roadmap-badge">готово</span>
-        </li>
-      </ol>
-    </div>
   `;
 
   try {
@@ -649,8 +608,12 @@ async function renderCards(params = new URLSearchParams()) {
           </button>
         `).join('')}
       </div>
-      <input class="search" id="card-search" type="search" autocomplete="off"
-             placeholder="Поиск по названию или ключевому слову" value="${escapeHtml(initialQuery)}">
+      <span class="search-field">
+        <input class="search" id="card-search" type="search" autocomplete="off"
+               placeholder="Поиск по названию или ключевому слову" value="${escapeHtml(initialQuery)}">
+        <button class="search-clear" id="card-search-clear" type="button"
+                aria-label="Очистить поиск" title="Очистить поиск" hidden>×</button>
+      </span>
       <button class="btn btn-small reset-filters" type="button" id="cards-reset" hidden>Сбросить фильтры</button>
     </div>
     <p class="result-count muted" id="cards-count"></p>
@@ -670,10 +633,12 @@ async function renderCards(params = new URLSearchParams()) {
 
   const state = { filter: initialFilter, query: initialQuery };
   const resetButton = document.getElementById('cards-reset');
+  const clearSearchButton = document.getElementById('card-search-clear');
 
   function paint() {
     const query = state.query.trim().toLowerCase();
     resetButton.hidden = state.filter === 'all' && !state.query.trim();
+    clearSearchButton.hidden = !state.query.trim();
     const list = cards.filter((card) => {
       if (state.filter === 'major' && card.arcana !== 'major') return false;
       if (state.filter !== 'all' && state.filter !== 'major' && card.suit !== state.filter) return false;
@@ -713,6 +678,14 @@ async function renderCards(params = new URLSearchParams()) {
   search.addEventListener('input', () => {
     state.query = search.value;
     paint();
+  });
+
+  clearSearchButton.addEventListener('click', () => {
+    state.query = '';
+    search.value = '';
+    history.replaceState(null, '', '#/cards');
+    paint();
+    search.focus();
   });
 
   resetButton.addEventListener('click', () => {

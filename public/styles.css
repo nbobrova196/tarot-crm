@@ -149,11 +149,24 @@ a:hover {
 .sidebar-foot {
   margin-top: auto;
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
   padding: 0 10px;
   font-size: 12px;
   color: var(--muted);
+}
+
+.status-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.developer {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: rgba(167, 157, 181, 0.75);
 }
 
 .status-dot {
@@ -265,56 +278,6 @@ a:hover {
   color: var(--muted);
 }
 
-/* План работ */
-
-.roadmap {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.roadmap li {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 9px 12px;
-  border-radius: 9px;
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid transparent;
-}
-
-.roadmap li.is-done {
-  border-color: rgba(111, 191, 143, 0.25);
-  background: rgba(111, 191, 143, 0.06);
-}
-
-.roadmap-step {
-  flex: none;
-  width: 62px;
-  font-size: 12px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
-.roadmap-text {
-  flex: 1;
-  font-size: 14.5px;
-}
-
-.roadmap-badge {
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  padding: 2px 9px;
-  border-radius: 999px;
-  color: #9fd8b7;
-  border: 1px solid rgba(111, 191, 143, 0.35);
-}
-
 /* Заглушки разделов */
 
 .stub {
@@ -412,6 +375,66 @@ a:hover {
   outline: none;
   border-color: rgba(201, 168, 106, 0.5);
   box-shadow: 0 0 0 3px rgba(201, 168, 106, 0.08);
+}
+
+input[type="search"]::-webkit-search-cancel-button {
+  cursor: pointer;
+}
+
+.search-field {
+  position: relative;
+  display: flex;
+  flex: 1 1 240px;
+  max-width: 340px;
+  min-width: 0;
+}
+
+.search-field .search {
+  flex: 1;
+  width: 100%;
+  max-width: none;
+  padding-right: 36px;
+}
+
+#card-search::-webkit-search-cancel-button {
+  display: none;
+}
+
+.search-clear {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transform: translateY(-50%);
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.search-clear:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+
+.search-clear:focus-visible {
+  outline: none;
+  background: rgba(201, 168, 106, 0.14);
+  color: var(--gold-soft);
+  box-shadow: 0 0 0 2px rgba(201, 168, 106, 0.35);
+}
+
+.search-clear[hidden] {
+  display: none;
 }
 
 .result-count {
@@ -2825,6 +2848,7 @@ input[type="date"] {
   .sidebar-foot {
     margin-top: 0;
     margin-left: auto;
+    align-items: flex-end;
   }
 
   .main {
@@ -2841,6 +2865,12 @@ input[type="date"] {
   }
 
   .search {
+    flex: none;
+    width: 100%;
+    max-width: none;
+  }
+
+  .search-field {
     flex: none;
     width: 100%;
     max-width: none;
