@@ -2092,6 +2092,151 @@ async function renderReadingForm(id, options = {}) {
 
 /* ---------- Страница расклада ---------- */
 
+function absoluteAssetUrl(path) {
+  try {
+    return new URL(path, location.href).href;
+  } catch {
+    return path;
+  }
+}
+
+function readingPrintHtml(reading) {
+  const title = reading.title || reading.question || 'Расклад';
+  const client = reading.client_name ? escapeHtml(reading.client_name) : 'для себя';
+  const status = READING_STATUS_LABELS[reading.status] ?? reading.status;
+  const cardsCount = reading.cards.length;
+  const cardsLabel = `${cardsCount} ${plural(cardsCount, ['карта', 'карты', 'карт'])}`;
+  const rawSpreadName = reading.spread_name || '';
+  const spreadName = rawSpreadName ? escapeHtml(rawSpreadName) : '';
+  const spreadCount = Number((rawSpreadName.match(/^(\d+)\s+карт/) ?? [])[1]);
+  const cardClass = cardsCount <= 1
+    ? 'count-1'
+    : cardsCount === 2
+      ? 'count-2'
+      : cardsCount === 3
+        ? 'count-3'
+        : cardsCount <= 6
+          ? 'count-4'
+          : 'count-5';
+
+  const cardsHtml = cardsCount > 0
+    ? reading.cards.map((card) => `
+        <figure class="card">
+          <div class="card-image${card.is_reversed ? ' is-reversed' : ''}">
+            <img src="${escapeHtml(absoluteAssetUrl(card.image || 'cards/placeholder.svg'))}"
+                 alt="${escapeHtml(card.name_ru)}">
+          </div>
+          <figcaption>
+            <div class="card-position">${card.position_index}. ${escapeHtml(card.position_name || `Позиция ${card.position_index}`)}</div>
+            <div class="card-name">${escapeHtml(card.name_ru)} <span class="en">(${escapeHtml(card.name_en)})</span></div>
+            ${card.is_reversed ? '<span class="card-reversed">перевёрнутая</span>' : ''}
+          </figcaption>
+        </figure>
+      `).join('')
+    : '<p class="empty">В раскладе пока нет карт.</p>';
+
+  const interpCards = reading.cards.filter((card) => card.interpretation_id && card.interpretation_body);
+  const interpsHtml = interpCards.map((card) => `
+    <div class="interp-item">
+      <div class="interp-head">
+        <strong>${card.position_index}. ${escapeHtml(card.position_name || `Позиция ${card.position_index}`)}</strong>
+        <span>${escapeHtml(card.name_ru)}${card.is_reversed ? ' · перевёрнутая' : ''}</span>
+      </div>
+      ${card.interpretation_title ? `<div class="interp-title">${escapeHtml(card.interpretation_title)}</div>` : ''}
+      <div class="prose">${escapeHtml(card.interpretation_body)}</div>
+    </div>
+  `).join('');
+
+  const originalsHtml = reading.cards.map((card) => {
+    const text = (card.is_reversed ? card.reversed : card.upright) ?? '';
+    if (!text) return '';
+    return `
+      <div class="original-item">
+        <div class="interp-head">
+          <strong>${card.position_index}. ${escapeHtml(card.position_name || `Позиция ${card.position_index}`)}</strong>
+          <span>${escapeHtml(card.name_ru)} (${escapeHtml(card.name_en)})${card.is_reversed ? ' · перевёрнутая' : ''}</span>
+        </div>
+        <div class="prose">${escapeHtml(text)}</div>
+      </div>
+    `;
+  }).join('');
+
+  const sections = [
+    reading.interpretation
+      ? `<section class="text-block"><h2>Трактовка расклада</h2><div class="prose">${escapeHtml(reading.interpretation)}</div></section>`
+      : '',
+    reading.summary
+      ? `<section class="text-block"><h2>Выводы</h2><div class="prose">${escapeHtml(reading.summary)}</div></section>`
+      : '',
+    interpsHtml
+      ? `<section class="text-block"><h2>Мои трактовки к картам</h2>${interpsHtml}</section>`
+      : '',
+    originalsHtml
+      ? `<section class="text-block"><h2>Значения выпавших карт</h2>${originalsHtml}</section>`
+      : '',
+  ].filter(Boolean).join('');
+
+  return `<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>${escapeHtml(title)} — Таро</title>
+  <base href="${escapeHtml(location.origin)}/">
+  <link rel="stylesheet" href="print.css">
+</head>
+<body>
+  <div class="print-toolbar">
+    <button type="button" onclick="window.print()">Сохранить в PDF</button>
+    <span>В диалоге печати выберите «Сохранить как PDF».</span>
+    <button type="button" class="ghost" onclick="window.close()">Закрыть</button>
+  </div>
+
+  <main class="sheet">
+    <header class="doc-head">
+      <div class="brand">
+        <img src="logo.png" alt="">
+        <div>
+          <div class="brand-title">Таро</div>
+          <div class="brand-sub">рабочее место</div>
+        </div>
+      </div>
+      <div class="doc-meta">
+        <span>${escapeHtml(formatLongDate(reading.reading_date))}</span>
+        <span>${client}</span>
+        <span class="status">${escapeHtml(status)}</span>
+      </div>
+    </header>
+
+    <h1>${escapeHtml(title)}</h1>
+    ${reading.question ? `<blockquote class="question">${escapeHtml(reading.question)}</blockquote>` : ''}
+    <div class="meta-row">${[spreadName, spreadCount === cardsCount ? null : escapeHtml(cardsLabel)].filter(Boolean).join(' · ')}</div>
+
+    <section class="cards ${cardClass}">${cardsHtml}</section>
+
+    ${sections}
+
+    <footer class="doc-foot">
+      <span>Таро · рабочее место</span>
+      <span>${escapeHtml(formatLongDate(reading.reading_date))}</span>
+    </footer>
+  </main>
+</body>
+</html>`;
+}
+
+function exportReadingPdf(reading) {
+  const printWindow = window.open('', 'tarot-reading-print');
+  if (!printWindow) {
+    alert('Браузер заблокировал новое окно. Разрешите всплывающие окна для этой страницы и попробуйте снова.');
+    return;
+  }
+
+  printWindow.document.open();
+  printWindow.document.write(readingPrintHtml(reading));
+  printWindow.document.close();
+  printWindow.focus();
+}
+
 async function renderReadingView(id) {
   viewEl.innerHTML = '<p class="muted">Загрузка расклада…</p>';
 
@@ -2230,6 +2375,8 @@ async function renderReadingView(id) {
         </div>
         <div class="actions">
           <a class="btn" href="#/readings/${reading.id}/edit">Редактировать</a>
+          <button class="btn" type="button" id="reading-pdf"
+                  title="Откроется предпросмотр — сохраните его как PDF">Экспорт в PDF</button>
           <button class="btn btn-danger" type="button" id="reading-delete">Удалить</button>
         </div>
       </div>
@@ -2332,6 +2479,10 @@ async function renderReadingView(id) {
     'Короткий итог, совет, к чему пришли',
     'Пока не заполнены.',
   );
+
+  document.getElementById('reading-pdf').addEventListener('click', () => {
+    exportReadingPdf(reading);
+  });
 
   document.getElementById('reading-delete').addEventListener('click', async () => {
     if (!confirm(`Удалить расклад «${title}»? Это действие нельзя отменить.`)) return;
