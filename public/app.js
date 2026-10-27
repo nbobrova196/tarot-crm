@@ -214,7 +214,60 @@ function customSelectMenuHtml(select) {
       items.push(customSelectOptionHtml(child, select));
     }
   }
-  return items.join('');
+
+  if (select.options.length <= 8) return items.join('');
+
+  const searchLabel = select.name === 'card_id'
+    ? 'Поиск карты'
+    : select.name === 'reading_id'
+      ? 'Поиск расклада'
+      : select.name === 'client_id'
+        ? 'Поиск клиента'
+        : 'Поиск по списку';
+
+  return `
+    <div class="custom-select-search-wrap">
+      <input class="custom-select-search" type="search" placeholder="${searchLabel}"
+             autocomplete="off" aria-label="${searchLabel}">
+    </div>
+    ${items.join('')}
+    <div class="custom-select-empty" hidden>Ничего не найдено</div>
+  `;
+}
+
+function filterCustomSelectOptions(wrapper, query) {
+  const menu = wrapper.querySelector('.custom-select-menu');
+  if (!menu) return;
+
+  const normalized = query.trim().toLowerCase();
+  const groups = [];
+  let currentGroup = null;
+  let visible = 0;
+
+  for (const node of menu.children) {
+    if (node.classList.contains('custom-select-search-wrap')
+      || node.classList.contains('custom-select-empty')) continue;
+
+    if (node.classList.contains('custom-select-group')) {
+      currentGroup = { node, matched: false };
+      groups.push(currentGroup);
+      continue;
+    }
+
+    if (!node.classList.contains('custom-select-option')) continue;
+
+    const matches = !normalized || node.textContent.toLowerCase().includes(normalized);
+    node.hidden = !matches;
+    if (matches) {
+      visible += 1;
+      if (currentGroup) currentGroup.matched = true;
+    }
+  }
+
+  for (const group of groups) group.node.hidden = !group.matched;
+
+  const empty = menu.querySelector('.custom-select-empty');
+  if (empty) empty.hidden = visible > 0;
 }
 
 function syncCustomSelect(select) {
@@ -260,7 +313,8 @@ function positionCustomSelectMenu(wrapper) {
   menu.classList.remove('is-up', 'is-right');
   const rect = trigger.getBoundingClientRect();
   const menuHeight = Math.min(menu.scrollHeight, 300);
-  const menuWidth = Math.min(Math.max(rect.width, 220), 320);
+  const menuWidth = menu.getBoundingClientRect().width
+    || Math.min(Math.max(rect.width, 220), 320);
 
   if (rect.bottom + menuHeight + 12 > window.innerHeight && rect.top > menuHeight + 12) {
     menu.classList.add('is-up');
@@ -277,10 +331,21 @@ function openCustomSelectMenu(wrapper) {
   wrapper.classList.add('is-open');
   wrapper.querySelector('.custom-select-trigger')?.setAttribute('aria-expanded', 'true');
   activeCustomSelect = wrapper;
+
+  const search = wrapper.querySelector('.custom-select-search');
+  if (search) {
+    search.value = '';
+    filterCustomSelectOptions(wrapper, '');
+  }
+
   positionCustomSelectMenu(wrapper);
 
-  const selected = wrapper.querySelector('.custom-select-option.is-selected');
-  selected?.scrollIntoView({ block: 'nearest' });
+  if (search) {
+    search.focus();
+  } else {
+    const selected = wrapper.querySelector('.custom-select-option.is-selected');
+    selected?.scrollIntoView({ block: 'nearest' });
+  }
 }
 
 function enhanceSelects(root = document) {
@@ -333,6 +398,7 @@ function enhanceSelects(root = document) {
       if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
       event.preventDefault();
       openCustomSelectMenu(wrapper);
+      if (menu.querySelector('.custom-select-search')) return;
       const options = [...menu.querySelectorAll('.custom-select-option:not(:disabled)')];
       const selected = options.find((option) => option.classList.contains('is-selected')) ?? options[0];
       selected?.focus();
@@ -353,19 +419,34 @@ function enhanceSelects(root = document) {
     });
 
     menu.addEventListener('keydown', (event) => {
-      const options = [...menu.querySelectorAll('.custom-select-option:not(:disabled)')];
+      const search = menu.querySelector('.custom-select-search');
+      const isSearch = event.target === search;
+      const options = [...menu.querySelectorAll('.custom-select-option:not(:disabled):not([hidden])')];
       const currentIndex = options.indexOf(document.activeElement);
 
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault();
+        if (isSearch) {
+          const target = event.key === 'ArrowDown' ? options[0] : options[options.length - 1];
+          target?.focus();
+          return;
+        }
         const nextIndex = event.key === 'ArrowDown'
           ? Math.min(options.length - 1, currentIndex + 1)
           : Math.max(0, currentIndex - 1);
         options[nextIndex]?.focus();
       } else if (event.key === 'Home' || event.key === 'End') {
+        if (isSearch) return;
         event.preventDefault();
         options[event.key === 'Home' ? 0 : options.length - 1]?.focus();
       } else if (event.key === 'Enter' || event.key === ' ') {
+        if (isSearch) {
+          if (event.key === 'Enter' && search.value.trim() && options.length > 0) {
+            event.preventDefault();
+            options[0].click();
+          }
+          return;
+        }
         event.preventDefault();
         if (document.activeElement?.classList.contains('custom-select-option')) {
           document.activeElement.click();
@@ -378,6 +459,14 @@ function enhanceSelects(root = document) {
         closeCustomSelect(wrapper);
       }
     });
+
+    const searchInput = menu.querySelector('.custom-select-search');
+    if (searchInput) {
+      searchInput.addEventListener('input', () => {
+        filterCustomSelectOptions(wrapper, searchInput.value);
+        menu.scrollTop = 0;
+      });
+    }
 
     select.addEventListener('change', () => syncCustomSelect(select));
     syncCustomSelect(select);
@@ -1192,7 +1281,7 @@ async function renderClientForm(id) {
   viewEl.innerHTML = `
     <a class="back-link" href="${backHref}">← назад</a>
     <form class="panel form" id="client-form" novalidate>
-      <label>Имя <span class="req">*</span>
+      <label><span>Имя<span class="req">*</span></span>
         <input name="name" maxlength="200" required placeholder="Например, Анна"
                value="${escapeHtml(client.name)}">
       </label>
@@ -1497,7 +1586,7 @@ async function renderReadingForm(id, options = {}) {
     <a class="back-link" href="#/readings">← к списку раскладов</a>
     <form class="panel form" id="reading-form" novalidate>
       <div class="form-row">
-        <label><span>Дата <span class="req">*</span></span>
+        <label><span>Дата<span class="req">*</span></span>
           <input name="reading_date" type="date" required value="${escapeHtml(reading.reading_date)}">
         </label>
         <label>Клиент
@@ -2912,7 +3001,7 @@ async function renderJournalForm(id, options = {}) {
 
     <form class="panel form journal-form" id="journal-form" novalidate>
       <div class="form-row">
-        <label>Дата <span class="req">*</span>
+        <label><span>Дата<span class="req">*</span></span>
           <input name="entry_date" type="date" required value="${entry.entry_date ?? todayIso()}">
         </label>
         <label>Заголовок

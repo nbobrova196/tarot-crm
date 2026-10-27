@@ -1187,6 +1187,53 @@ a:hover {
   max-width: 340px;
 }
 
+.custom-select-search-wrap {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 0 0 6px;
+  background: #100d16;
+}
+
+.custom-select-search {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #15111f;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.custom-select-search::placeholder {
+  color: var(--muted);
+}
+
+.custom-select-search::-webkit-search-cancel-button,
+.custom-select-search::-webkit-search-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.custom-select-search:focus {
+  outline: none;
+  border-color: rgba(201, 168, 106, 0.5);
+  box-shadow: 0 0 0 3px rgba(201, 168, 106, 0.08);
+}
+
+.custom-select-empty {
+  padding: 10px 11px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.custom-select-option[hidden],
+.custom-select-group[hidden],
+.custom-select-empty[hidden] {
+  display: none;
+}
+
 .custom-select-group {
   padding: 8px 11px 4px;
   color: var(--gold);
@@ -1253,11 +1300,9 @@ a:hover {
 
 @keyframes custom-select-in {
   from {
-    opacity: 0;
     transform: translateY(-4px);
   }
   to {
-    opacity: 1;
     transform: translateY(0);
   }
 }
