@@ -633,18 +633,24 @@ function cardTile(card) {
   `;
 }
 
-async function renderCards() {
+async function renderCards(params = new URLSearchParams()) {
+  const initialQuery = (params.get('q') ?? '').trim();
+  const requestedFilter = params.get('filter');
+  const initialFilter = CARD_FILTERS.some((filter) => filter.id === requestedFilter)
+    ? requestedFilter
+    : 'all';
+
   viewEl.innerHTML = `
     <div class="cards-toolbar">
       <div class="chips" id="card-filters">
-        ${CARD_FILTERS.map((filter, index) => `
-          <button type="button" class="chip${index === 0 ? ' is-active' : ''}" data-filter="${filter.id}">
+        ${CARD_FILTERS.map((filter) => `
+          <button type="button" class="chip${filter.id === initialFilter ? ' is-active' : ''}" data-filter="${filter.id}">
             ${filter.label}
           </button>
         `).join('')}
       </div>
       <input class="search" id="card-search" type="search" autocomplete="off"
-             placeholder="Поиск по названию или ключевому слову">
+             placeholder="Поиск по названию или ключевому слову" value="${escapeHtml(initialQuery)}">
       <button class="btn btn-small reset-filters" type="button" id="cards-reset" hidden>Сбросить фильтры</button>
     </div>
     <p class="result-count muted" id="cards-count"></p>
@@ -662,7 +668,7 @@ async function renderCards() {
     return;
   }
 
-  const state = { filter: 'all', query: '' };
+  const state = { filter: initialFilter, query: initialQuery };
   const resetButton = document.getElementById('cards-reset');
 
   function paint() {
@@ -679,6 +685,7 @@ async function renderCards() {
         card.name_ru,
         card.name_en,
         (card.keywords ?? []).join(' '),
+        (card.themes ?? []).join(' '),
         card.notes ?? '',
         personal,
       ].join(' ').toLowerCase();
@@ -712,6 +719,7 @@ async function renderCards() {
     state.filter = 'all';
     state.query = '';
     search.value = '';
+    history.replaceState(null, '', '#/cards');
     for (const chip of document.querySelectorAll('#card-filters .chip')) {
       chip.classList.toggle('is-active', chip.dataset.filter === 'all');
     }
@@ -777,7 +785,10 @@ async function renderCardDetail(id) {
         </div>
 
         <div class="keywords">
-          ${(card.keywords ?? []).map((word) => `<span class="keyword">${word}</span>`).join('')}
+          ${(card.keywords ?? []).map((word) => `
+            <a class="keyword keyword-link" href="#/cards?q=${encodeURIComponent(word)}"
+               title="Показать карты с этим ключевым словом">${escapeHtml(word)}</a>
+          `).join('')}
         </div>
 
         <section class="meaning">
@@ -792,7 +803,10 @@ async function renderCardDetail(id) {
 
         <div class="themes-row">
           <span class="muted">Темы:</span>
-          ${(card.themes ?? []).map((theme) => `<span class="theme">${theme}</span>`).join('')}
+          ${(card.themes ?? []).map((theme) => `
+            <a class="theme theme-link" href="#/cards?q=${encodeURIComponent(theme)}"
+               title="Показать карты с этой темой">${escapeHtml(theme)}</a>
+          `).join('')}
         </div>
 
         <div class="card-detail-actions">
@@ -3695,7 +3709,7 @@ function route() {
   } else if (section.id === 'cards' && action) {
     renderCardDetail(action);
   } else if (section.id === 'cards') {
-    renderCards();
+    renderCards(params);
   } else if (section.id === 'clients' && action === 'new') {
     renderClientForm(null);
   } else if (section.id === 'clients' && action && sub === 'edit') {
