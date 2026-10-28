@@ -21,6 +21,12 @@ const SECTIONS = [
     subtitle: 'История раскладов и клиентских вопросов',
   },
   {
+    id: 'events',
+    label: 'События',
+    title: 'События',
+    subtitle: 'Что запланировано и чем закончилось',
+  },
+  {
     id: 'clients',
     label: 'Клиенты',
     title: 'Клиенты',
@@ -75,6 +81,35 @@ const READING_STATUS_FILTERS = [
   { id: 'done', label: 'Завершённые' },
   { id: 'archived', label: 'Архив' },
 ];
+
+const EVENT_STATUS_LABELS = {
+  planned: 'запланировано',
+  in_progress: 'в процессе',
+  done: 'завершено',
+  cancelled: 'отменено',
+  archived: 'архив',
+};
+
+const EVENT_STATUS_FILTERS = [
+  { id: 'all', label: 'Все' },
+  { id: 'planned', label: 'Запланированные' },
+  { id: 'in_progress', label: 'В процессе' },
+  { id: 'done', label: 'Завершённые' },
+  { id: 'cancelled', label: 'Отменённые' },
+  { id: 'archived', label: 'Архив' },
+];
+
+const EVENT_STATUS_FORM_LABELS = {
+  planned: 'Запланировано',
+  in_progress: 'В процессе',
+  done: 'Завершено',
+  cancelled: 'Отменено',
+  archived: 'Архив',
+};
+
+function eventStatusClass(status) {
+  return `status-${String(status ?? '').replace(/_/g, '-')}`;
+}
 
 const TRIPLETS = [
   {
@@ -221,9 +256,11 @@ function customSelectMenuHtml(select) {
     ? 'Поиск карты'
     : select.name === 'reading_id'
       ? 'Поиск расклада'
-      : select.name === 'client_id'
-        ? 'Поиск клиента'
-        : 'Поиск по списку';
+      : select.name === 'event_id'
+        ? 'Поиск события'
+        : select.name === 'client_id'
+          ? 'Поиск клиента'
+          : 'Поиск по списку';
 
   return `
     <div class="custom-select-search-wrap">
@@ -484,6 +521,41 @@ document.addEventListener('keydown', (event) => {
   const wrapper = activeCustomSelect;
   closeCustomSelect(wrapper);
   wrapper.querySelector('.custom-select-trigger')?.focus();
+});
+
+// Отвязка событий и раскладов: один делегированный обработчик на всё приложение,
+// чтобы повторные перерисовки не накапливали слушатели.
+viewEl.addEventListener('click', async (clickEvent) => {
+  const eventButton = clickEvent.target.closest('[data-unlink-event]');
+  if (eventButton && !eventButton.disabled) {
+    clickEvent.preventDefault();
+    eventButton.disabled = true;
+    const eventId = Number(eventButton.dataset.unlinkEvent);
+    const readingId = Number(eventButton.dataset.readingId);
+    try {
+      await api(`/api/events/${eventId}/readings/${readingId}`, { method: 'DELETE' });
+      renderReadingView(readingId);
+    } catch (error) {
+      eventButton.disabled = false;
+      alert(error.message);
+    }
+    return;
+  }
+
+  const readingButton = clickEvent.target.closest('[data-unlink-reading]');
+  if (readingButton && !readingButton.disabled) {
+    clickEvent.preventDefault();
+    readingButton.disabled = true;
+    const eventId = Number(readingButton.dataset.eventId);
+    const readingId = Number(readingButton.dataset.unlinkReading);
+    try {
+      await api(`/api/events/${eventId}/readings/${readingId}`, { method: 'DELETE' });
+      renderEventView(eventId);
+    } catch (error) {
+      readingButton.disabled = false;
+      alert(error.message);
+    }
+  }
 });
 
 /* ---------- Обзор ---------- */
@@ -1198,6 +1270,19 @@ async function renderClientDetail(id) {
       `).join('')
     : `<div class="empty">Записей пока нет.<br><a href="#/journal/new?client=${client.id}">Добавить первую</a></div>`;
 
+  const clientEvents = client.events ?? [];
+  const eventsHtml = clientEvents.length > 0
+    ? clientEvents.map((event) => `
+        <a class="list-row" href="#/events/${event.id}">
+          <div class="list-main">
+            <div class="list-title">${escapeHtml(event.title)}</div>
+            <div class="list-sub">${eventDateLabel(event)}${event.category ? ` · ${escapeHtml(event.category)}` : ''}</div>
+          </div>
+          <span class="status-badge ${eventStatusClass(event.status)}">${EVENT_STATUS_LABELS[event.status] ?? event.status}</span>
+        </a>
+      `).join('')
+    : '<div class="empty">Событий пока нет. Они появятся, когда вы свяжете событие с раскладом клиента.</div>';
+
   viewEl.innerHTML = `
     <a class="back-link" href="#/clients">← все клиенты</a>
 
@@ -1226,6 +1311,14 @@ async function renderClientDetail(id) {
         <a class="panel-link" href="#/journal/new?client=${client.id}">новая запись →</a>
       </div>
       ${journalHtml}
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>События</h2>
+        <a class="panel-link" href="#/events">все события →</a>
+      </div>
+      ${eventsHtml}
     </div>
   `;
 
@@ -1521,6 +1614,7 @@ async function renderReadings() {
 
 async function renderReadingForm(id, options = {}) {
   let isEdit = Boolean(id);
+  const isNewReading = !isEdit;
   let reading = {
     id: null,
     reading_date: todayIso(),
@@ -1556,6 +1650,16 @@ async function renderReadingForm(id, options = {}) {
       </div>
     `;
     return;
+  }
+
+  if (!isEdit && options.eventId) {
+    try {
+      const sourceEvent = await api(`/api/events/${encodeURIComponent(options.eventId)}`);
+      reading.title = sourceEvent.title;
+      reading.question = sourceEvent.description || '';
+    } catch {
+      // событие могло быть удалено — расклад всё равно можно создать
+    }
   }
 
   titleEl.textContent = isEdit ? 'Редактирование расклада' : 'Новый расклад';
@@ -1704,6 +1808,17 @@ async function renderReadingForm(id, options = {}) {
       const saved = isEdit
         ? await api(`/api/readings/${reading.id}`, { method: 'PUT', body: JSON.stringify(payload) })
         : await api('/api/readings', { method: 'POST', body: JSON.stringify(payload) });
+
+      if (isNewReading && options.eventId) {
+        try {
+          await api(`/api/events/${encodeURIComponent(options.eventId)}/readings`, {
+            method: 'POST',
+            body: JSON.stringify({ reading_id: saved.id }),
+          });
+        } catch {
+          // расклад уже создан; связь с событием можно добавить вручную
+        }
+      }
 
       reading = saved;
       isEdit = true;
@@ -2254,10 +2369,16 @@ async function renderReadingView(id) {
   }
 
   let journal = [];
+  let allEvents = [];
   try {
     journal = await api(`/api/journal?reading_id=${reading.id}`);
   } catch {
     // дневник не должен мешать открытию расклада
+  }
+  try {
+    allEvents = await api('/api/events');
+  } catch {
+    // список событий не должен мешать открытию расклада
   }
 
   const title = reading.title || reading.question || 'Расклад';
@@ -2329,6 +2450,63 @@ async function renderReadingView(id) {
             </a>
           `).join('')
         : `<div class="empty">Записей по этому раскладу пока нет. <a href="${journalLink}">Добавить</a></div>`}
+    </div>
+  `;
+
+  const linkedEvents = reading.events ?? [];
+  const linkedEventIds = new Set(linkedEvents.map((event) => event.id));
+  const availableEvents = allEvents.filter((event) => !linkedEventIds.has(event.id));
+
+  const eventsHtml = linkedEvents.length > 0
+    ? linkedEvents.map((event) => `
+        <div class="reading-row">
+          <a class="reading-row-link" href="#/events/${event.id}">
+            <div class="reading-date">${event.planned_date || event.actual_date
+              ? formatDate(event.planned_date || event.actual_date)
+              : '—'}</div>
+            <div class="list-main">
+              <div class="list-title">${escapeHtml(event.title)}</div>
+              <div class="list-sub">${escapeHtml(event.category || 'без категории')} · ${eventDateLabel(event)}</div>
+            </div>
+            <span class="status-badge ${eventStatusClass(event.status)}">${EVENT_STATUS_LABELS[event.status] ?? event.status}</span>
+          </a>
+          <button class="icon-btn danger" type="button" data-unlink-event="${event.id}"
+                  data-reading-id="${reading.id}"
+                  title="Отвязать событие" aria-label="Отвязать событие «${escapeHtml(event.title)}»">×</button>
+        </div>
+      `).join('')
+    : `<div class="empty">С этим раскладом пока не связано ни одно событие.
+         <a href="#/events/new?reading=${reading.id}">Создать событие</a>
+       </div>`;
+
+  const addEventHtml = allEvents.length === 0
+    ? `<p class="muted event-link-hint">Событий пока нет.
+         <a href="#/events/new?reading=${reading.id}">Создать первое</a>.
+       </p>`
+    : availableEvents.length > 0
+      ? `
+        <div class="event-link-row">
+          <select class="select" id="reading-event-add" aria-label="Событие для связи">
+            <option value="">Выберите событие</option>
+            ${availableEvents.map((event) => `
+              <option value="${event.id}">
+                ${escapeHtml(event.title)}${event.planned_date ? ` · ${formatDate(event.planned_date)}` : ''}
+              </option>
+            `).join('')}
+          </select>
+          <button class="btn" type="button" id="reading-event-add-btn">Связать</button>
+        </div>
+      `
+      : '<p class="muted event-link-hint">Все события уже связаны с этим раскладом.</p>';
+
+  const eventsPanelHtml = `
+    <div class="panel" id="reading-events-panel">
+      <div class="panel-head">
+        <h2>Связанные события</h2>
+        <a class="panel-link" href="#/events/new?reading=${reading.id}">новое событие →</a>
+      </div>
+      ${eventsHtml}
+      ${addEventHtml}
     </div>
   `;
 
@@ -2407,8 +2585,12 @@ async function renderReadingView(id) {
 
     ${editablePanel('summary', 'Выводы', 'Пока не заполнены.')}
 
+    ${eventsPanelHtml}
+
     ${journalHtml}
   `;
+
+  enhanceSelects(viewEl);
 
   function setupInlineEdit(field, rows, placeholder, emptyText) {
     const panel = viewEl.querySelector(`[data-panel="${field}"]`);
@@ -2480,6 +2662,25 @@ async function renderReadingView(id) {
     'Пока не заполнены.',
   );
 
+  const addEventSelect = document.getElementById('reading-event-add');
+  const addEventButton = document.getElementById('reading-event-add-btn');
+  if (addEventSelect && addEventButton) {
+    addEventButton.addEventListener('click', async () => {
+      if (!addEventSelect.value) return;
+      addEventButton.disabled = true;
+      try {
+        await api(`/api/events/${addEventSelect.value}/readings`, {
+          method: 'POST',
+          body: JSON.stringify({ reading_id: reading.id }),
+        });
+        renderReadingView(reading.id);
+      } catch (error) {
+        addEventButton.disabled = false;
+        alert(error.message);
+      }
+    });
+  }
+
   document.getElementById('reading-pdf').addEventListener('click', () => {
     exportReadingPdf(reading);
   });
@@ -2491,6 +2692,476 @@ async function renderReadingView(id) {
       location.hash = '#/readings';
     } catch (error) {
       alert(error.message);
+    }
+  });
+}
+
+/* ---------- События ---------- */
+
+function eventDateLabel(event) {
+  if (event.actual_date) return `факт ${formatDate(event.actual_date)}`;
+  if (event.planned_date) return `план ${formatDate(event.planned_date)}`;
+  return 'без даты';
+}
+
+function eventReadingsLabel(count) {
+  return `${count} ${plural(count, ['расклад', 'расклада', 'раскладов'])}`;
+}
+
+async function renderEvents() {
+  viewEl.innerHTML = `
+    <div class="cards-toolbar">
+      <input class="search" id="event-search" type="search" autocomplete="off"
+             placeholder="Поиск по названию, описанию или результату">
+      <a class="btn btn-primary" href="#/events/new">Новое событие</a>
+    </div>
+
+    <div class="filters-row">
+      <div class="chips" id="event-status">
+        ${EVENT_STATUS_FILTERS.map((filter, index) => `
+          <button type="button" class="chip${index === 0 ? ' is-active' : ''}" data-status="${filter.id}">
+            ${filter.label}
+          </button>
+        `).join('')}
+      </div>
+      <select class="select chip-select" id="event-category">
+        <option value="">Все категории</option>
+      </select>
+      <div class="date-range">
+        <label class="date-filter">с <input class="select" type="date" id="event-from"></label>
+        <label class="date-filter">по <input class="select" type="date" id="event-to"></label>
+      </div>
+      <button class="btn btn-small reset-filters" type="button" id="events-reset" hidden>Сбросить фильтры</button>
+    </div>
+
+    <p class="result-count muted" id="events-count"></p>
+    <div class="panel list-panel" id="events-list"><p class="muted">Загрузка…</p></div>
+  `;
+
+  const list = document.getElementById('events-list');
+  const counter = document.getElementById('events-count');
+
+  let events;
+  try {
+    events = await api('/api/events');
+  } catch (error) {
+    list.innerHTML = `<p class="muted">${escapeHtml(error.message)}</p>`;
+    return;
+  }
+
+  const categorySelect = document.getElementById('event-category');
+  const categories = [...new Set(events.map((event) => event.category).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, 'ru'));
+  categorySelect.insertAdjacentHTML('beforeend', categories
+    .map((category) => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`)
+    .join(''));
+  enhanceSelects(viewEl);
+
+  const state = { status: 'all', category: '', from: '', to: '', query: '' };
+  const resetButton = document.getElementById('events-reset');
+
+  function updateReset() {
+    resetButton.hidden = state.status === 'all'
+      && !state.category
+      && !state.from
+      && !state.to
+      && !state.query.trim();
+  }
+
+  function resetFilters() {
+    state.status = 'all';
+    state.category = '';
+    state.from = '';
+    state.to = '';
+    state.query = '';
+
+    for (const chip of document.querySelectorAll('#event-status .chip')) {
+      chip.classList.toggle('is-active', chip.dataset.status === 'all');
+    }
+    setSelectValue(categorySelect, '');
+    setSelectActive(categorySelect, false);
+    document.getElementById('event-from').value = '';
+    document.getElementById('event-to').value = '';
+    document.getElementById('event-search').value = '';
+    paint();
+  }
+
+  function paint() {
+    const query = state.query.trim().toLowerCase();
+
+    const visible = events.filter((event) => {
+      if (state.status !== 'all' && event.status !== state.status) return false;
+      if (state.category && event.category !== state.category) return false;
+      if (state.from && (!event.planned_date || event.planned_date < state.from)) return false;
+      if (state.to && (!event.planned_date || event.planned_date > state.to)) return false;
+      if (!query) return true;
+
+      const haystack = [
+        event.title,
+        event.description,
+        event.category,
+        event.result,
+        event.notes,
+        event.reading_titles,
+        event.client_names,
+      ].filter(Boolean).join(' ').toLowerCase();
+
+      return haystack.includes(query);
+    });
+
+    counter.textContent = `${visible.length} ${plural(visible.length, ['событие', 'события', 'событий'])}`;
+    updateReset();
+
+    if (visible.length === 0) {
+      list.innerHTML = events.length === 0
+        ? '<div class="empty">Пока ни одного события.<br><a href="#/events/new">Добавить первое</a></div>'
+        : '<div class="empty">Ничего не найдено. Попробуйте изменить фильтры.</div>';
+      return;
+    }
+
+    list.innerHTML = visible.map((event) => {
+      const meta = [
+        event.category,
+        event.actual_date && event.planned_date ? `факт ${formatDate(event.actual_date)}` : null,
+        eventReadingsLabel(event.readings_count ?? 0),
+      ].filter(Boolean).join(' · ');
+
+      return `
+        <div class="reading-row">
+          <a class="reading-row-link" href="#/events/${event.id}">
+            <div class="reading-date">${event.planned_date || event.actual_date
+              ? formatDate(event.planned_date || event.actual_date)
+              : '—'}</div>
+            <div class="list-main">
+              <div class="list-title">${escapeHtml(event.title)}</div>
+              <div class="list-sub">${escapeHtml(meta)}</div>
+            </div>
+            <span class="status-badge ${eventStatusClass(event.status)}">${EVENT_STATUS_LABELS[event.status] ?? event.status}</span>
+          </a>
+        </div>
+      `;
+    }).join('');
+  }
+
+  document.getElementById('event-status').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-status]');
+    if (!button) return;
+    state.status = button.dataset.status;
+    for (const chip of document.querySelectorAll('#event-status .chip')) {
+      chip.classList.toggle('is-active', chip === button);
+    }
+    paint();
+  });
+
+  categorySelect.addEventListener('change', () => {
+    state.category = categorySelect.value;
+    setSelectActive(categorySelect, Boolean(categorySelect.value));
+    paint();
+  });
+
+  document.getElementById('event-from').addEventListener('change', (event) => {
+    state.from = event.target.value;
+    paint();
+  });
+
+  document.getElementById('event-to').addEventListener('change', (event) => {
+    state.to = event.target.value;
+    paint();
+  });
+
+  const search = document.getElementById('event-search');
+  search.addEventListener('input', () => {
+    state.query = search.value;
+    paint();
+  });
+
+  resetButton.addEventListener('click', resetFilters);
+  paint();
+}
+
+async function renderEventView(id) {
+  viewEl.innerHTML = '<p class="muted">Загрузка события…</p>';
+
+  let event;
+  let readings = [];
+  try {
+    [event, readings] = await Promise.all([
+      api(`/api/events/${encodeURIComponent(id)}`),
+      api('/api/readings'),
+    ]);
+  } catch (error) {
+    viewEl.innerHTML = `
+      <div class="panel">
+        <p>${escapeHtml(error.message)}</p>
+        <p class="hint"><a href="#/events">← ко всем событиям</a></p>
+      </div>
+    `;
+    return;
+  }
+
+  titleEl.textContent = event.title;
+  subtitleEl.textContent = [
+    event.category,
+    eventDateLabel(event),
+  ].filter(Boolean).join(' · ') || 'событие';
+  document.title = `${event.title} · Таро`;
+
+  const linkedIds = new Set((event.readings ?? []).map((reading) => reading.id));
+  const availableReadings = readings.filter((reading) => !linkedIds.has(reading.id));
+
+  const linkedHtml = event.readings?.length > 0
+    ? event.readings.map((reading) => `
+        <div class="reading-row">
+          <a class="reading-row-link" href="#/readings/${reading.id}">
+            <div class="reading-date">${formatDate(reading.reading_date)}</div>
+            <div class="list-main">
+              <div class="list-title">${escapeHtml(reading.title || reading.question || 'Расклад')}</div>
+              <div class="list-sub">${escapeHtml(reading.client_name || 'для себя')}${reading.spread_name ? ` · ${escapeHtml(reading.spread_name)}` : ''}</div>
+            </div>
+            <span class="status-badge status-${reading.status}">${READING_STATUS_LABELS[reading.status] ?? reading.status}</span>
+          </a>
+          <button class="icon-btn danger" type="button" data-unlink-reading="${reading.id}"
+                  data-event-id="${event.id}"
+                  title="Отвязать расклад" aria-label="Отвязать расклад «${escapeHtml(reading.title || reading.question || 'Расклад')}»">×</button>
+        </div>
+      `).join('')
+    : `<div class="empty">С этим событием пока не связан ни один расклад.
+         <a href="#/readings/new?event=${event.id}">Создать расклад по событию</a>
+       </div>`;
+
+  const addReadingHtml = readings.length === 0
+    ? `<p class="muted event-link-hint">Раскладов пока нет.
+         <a href="#/readings/new?event=${event.id}">Создать расклад по событию</a>.
+       </p>`
+    : availableReadings.length > 0
+      ? `
+        <div class="event-link-row">
+          <select class="select" id="event-reading-add" aria-label="Расклад для связи">
+            <option value="">Выберите расклад</option>
+            ${availableReadings.map((reading) => `
+              <option value="${reading.id}">
+                ${escapeHtml(reading.title || reading.question || 'Расклад')} · ${formatDate(reading.reading_date)}
+              </option>
+            `).join('')}
+          </select>
+          <button class="btn" type="button" id="event-reading-add-btn">Связать</button>
+        </div>
+      `
+      : '<p class="muted event-link-hint">Все расклады уже связаны с этим событием.</p>';
+
+  const facts = [
+    event.planned_date ? `План: ${formatDate(event.planned_date)}` : null,
+    event.actual_date ? `Факт: ${formatDate(event.actual_date)}` : null,
+    event.category ? `Категория: ${escapeHtml(event.category)}` : null,
+  ].filter(Boolean);
+
+  viewEl.innerHTML = `
+    <a class="back-link" href="#/events">← все события</a>
+
+    <div class="panel">
+      <div class="detail-head">
+        <div class="reading-view-head">
+          <p class="muted detail-info">${facts.join(' · ') || 'даты и категория не указаны'}</p>
+          <span class="status-badge ${eventStatusClass(event.status)}">${EVENT_STATUS_LABELS[event.status] ?? event.status}</span>
+        </div>
+        <div class="actions">
+          <a class="btn" href="#/events/${event.id}/edit">Редактировать</a>
+          <button class="btn btn-danger" type="button" id="event-delete">Удалить</button>
+        </div>
+      </div>
+
+      ${event.description
+        ? `<div class="notes">${escapeHtml(event.description)}</div>`
+        : '<p class="muted notes-empty">Описания пока нет.</p>'}
+    </div>
+
+    ${event.result || event.notes
+      ? `<div class="panel">
+           <h2>Результат и заметки</h2>
+           ${event.result ? `<div class="event-block"><h3>Фактический результат</h3><div class="notes event-notes">${escapeHtml(event.result)}</div></div>` : ''}
+           ${event.notes ? `<div class="event-block"><h3>Заметки</h3><div class="notes event-notes">${escapeHtml(event.notes)}</div></div>` : ''}
+         </div>`
+      : ''}
+
+    <div class="panel" id="event-readings-panel">
+      <div class="panel-head">
+        <h2>Связанные расклады</h2>
+        <a class="panel-link" href="#/readings/new?event=${event.id}">создать расклад →</a>
+      </div>
+      ${linkedHtml}
+      ${addReadingHtml}
+    </div>
+  `;
+
+  enhanceSelects(viewEl);
+
+  document.getElementById('event-delete').addEventListener('click', async () => {
+    if (!confirm(`Удалить событие «${event.title}»? Связи с раскладами удалятся, сами расклады останутся.`)) return;
+    try {
+      await api(`/api/events/${event.id}`, { method: 'DELETE' });
+      location.hash = '#/events';
+    } catch (error) {
+      alert(error.message);
+    }
+  });
+
+  const addSelect = document.getElementById('event-reading-add');
+  const addButton = document.getElementById('event-reading-add-btn');
+  if (addSelect && addButton) {
+    addButton.addEventListener('click', async () => {
+      if (!addSelect.value) return;
+      addButton.disabled = true;
+      try {
+        await api(`/api/events/${event.id}/readings`, {
+          method: 'POST',
+          body: JSON.stringify({ reading_id: Number(addSelect.value) }),
+        });
+        renderEventView(event.id);
+      } catch (error) {
+        addButton.disabled = false;
+        alert(error.message);
+      }
+    });
+  }
+
+}
+
+async function renderEventForm(id, options = {}) {
+  const isEdit = Boolean(id);
+  let event = {
+    title: '',
+    description: '',
+    category: '',
+    planned_date: todayIso(),
+    actual_date: '',
+    status: 'planned',
+    result: '',
+    notes: '',
+  };
+  let linkedReading = null;
+
+  if (isEdit) {
+    viewEl.innerHTML = '<p class="muted">Загрузка…</p>';
+    try {
+      event = await api(`/api/events/${encodeURIComponent(id)}`);
+    } catch (error) {
+      viewEl.innerHTML = `
+        <div class="panel">
+          <p>${escapeHtml(error.message)}</p>
+          <p class="hint"><a href="#/events">← ко всем событиям</a></p>
+        </div>
+      `;
+      return;
+    }
+  } else if (options.readingId) {
+    try {
+      linkedReading = await api(`/api/readings/${encodeURIComponent(options.readingId)}`);
+    } catch {
+      linkedReading = null;
+    }
+  }
+
+  titleEl.textContent = isEdit ? 'Редактирование события' : 'Новое событие';
+  subtitleEl.textContent = isEdit ? event.title : 'Что произойдёт и чем закончилось';
+  document.title = `${titleEl.textContent} · Таро`;
+
+  const backHref = isEdit ? `#/events/${event.id}` : '#/events';
+
+  viewEl.innerHTML = `
+    <a class="back-link" href="${backHref}">← назад</a>
+    ${linkedReading
+      ? `<p class="event-link-note">Событие будет связано с раскладом
+           <a href="#/readings/${linkedReading.id}">«${escapeHtml(linkedReading.title || linkedReading.question || 'Расклад')}»</a>.</p>`
+      : ''}
+    <form class="panel form" id="event-form" novalidate>
+      <label><span>Название<span class="req">*</span></span>
+        <input name="title" maxlength="200" required placeholder="Например, «Собеседование» или «Поездка»"
+               value="${escapeHtml(event.title)}">
+      </label>
+
+      <div class="form-row">
+        <label>Категория
+          <input name="category" maxlength="100" placeholder="Работа, отношения, поездка"
+                 value="${escapeHtml(event.category ?? '')}">
+        </label>
+        <label>Статус
+          <select name="status">
+            ${EVENT_STATUS_FILTERS.filter((status) => status.id !== 'all').map((status) => `
+              <option value="${status.id}"${event.status === status.id ? ' selected' : ''}>${EVENT_STATUS_FORM_LABELS[status.id]}</option>
+            `).join('')}
+          </select>
+        </label>
+      </div>
+
+      <div class="form-row">
+        <label>Планируемая дата
+          <input name="planned_date" type="date" value="${event.planned_date ?? ''}">
+        </label>
+        <label>Фактическая дата
+          <input name="actual_date" type="date" value="${event.actual_date ?? ''}">
+        </label>
+      </div>
+
+      <label>Описание
+        <textarea name="description" rows="5" maxlength="5000"
+                  placeholder="Что за событие, что важно учесть">${escapeHtml(event.description ?? '')}</textarea>
+      </label>
+
+      <label>Фактический результат
+        <textarea name="result" rows="5" maxlength="5000"
+                  placeholder="Что произошло на самом деле">${escapeHtml(event.result ?? '')}</textarea>
+      </label>
+
+      <label>Заметки
+        <textarea name="notes" rows="4" maxlength="5000"
+                  placeholder="Наблюдения, выводы, что сделать дальше">${escapeHtml(event.notes ?? '')}</textarea>
+      </label>
+
+      <p class="form-error" id="form-error"></p>
+      <div class="form-actions">
+        <button class="btn btn-primary" type="submit">${isEdit ? 'Сохранить изменения' : 'Добавить событие'}</button>
+        <a class="btn" href="${backHref}">Отмена</a>
+      </div>
+    </form>
+  `;
+
+  const form = document.getElementById('event-form');
+  const errorEl = document.getElementById('form-error');
+  const submitButton = form.querySelector('button[type="submit"]');
+  enhanceSelects(form);
+
+  form.addEventListener('submit', async (submitEvent) => {
+    submitEvent.preventDefault();
+    const data = Object.fromEntries(new FormData(form).entries());
+
+    if (!String(data.title ?? '').trim()) {
+      errorEl.textContent = 'Название события обязательно.';
+      return;
+    }
+
+    errorEl.textContent = '';
+    submitButton.disabled = true;
+
+    try {
+      const saved = isEdit
+        ? await api(`/api/events/${event.id}`, { method: 'PUT', body: JSON.stringify(data) })
+        : await api('/api/events', { method: 'POST', body: JSON.stringify(data) });
+
+      if (!isEdit && linkedReading) {
+        try {
+          await api(`/api/events/${saved.id}/readings`, {
+            method: 'POST',
+            body: JSON.stringify({ reading_id: linkedReading.id }),
+          });
+        } catch {
+          // событие уже сохранено; связь можно добавить вручную
+        }
+      }
+
+      location.hash = `#/events/${saved.id}`;
+    } catch (error) {
+      errorEl.textContent = error.message;
+      submitButton.disabled = false;
     }
   });
 }
@@ -3834,6 +4505,14 @@ function route() {
     renderCardDetail(action);
   } else if (section.id === 'cards') {
     renderCards(params);
+  } else if (section.id === 'events' && action === 'new') {
+    renderEventForm(null, { readingId: params.get('reading') });
+  } else if (section.id === 'events' && action && sub === 'edit') {
+    renderEventForm(action);
+  } else if (section.id === 'events' && action) {
+    renderEventView(action);
+  } else if (section.id === 'events') {
+    renderEvents();
   } else if (section.id === 'clients' && action === 'new') {
     renderClientForm(null);
   } else if (section.id === 'clients' && action && sub === 'edit') {
@@ -3843,7 +4522,10 @@ function route() {
   } else if (section.id === 'clients') {
     renderClients();
   } else if (section.id === 'readings' && action === 'new') {
-    renderReadingForm(null, { clientId: params.get('client') });
+    renderReadingForm(null, {
+      clientId: params.get('client'),
+      eventId: params.get('event'),
+    });
   } else if (section.id === 'readings' && action && sub === 'edit') {
     renderReadingForm(action);
   } else if (section.id === 'readings' && action) {

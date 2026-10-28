@@ -19,7 +19,7 @@ db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
 db.exec('PRAGMA busy_timeout = 5000');
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 const schemaV1 = `
 CREATE TABLE IF NOT EXISTS cards (
@@ -189,6 +189,50 @@ if (currentVersion < 4) {
         ADD COLUMN interpretation_id INTEGER REFERENCES card_interpretations(id) ON DELETE SET NULL
       `);
     }
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+// Версия 5: события и их связь с раскладами.
+// Событие живёт отдельно от расклада: один расклад может быть связан с
+// несколькими событиями и наоборот. При удалении события или расклада
+// удаляются только связи, сами записи остаются.
+const schemaV5 = `
+CREATE TABLE IF NOT EXISTS events (
+  id            INTEGER PRIMARY KEY,
+  title         TEXT NOT NULL,
+  description   TEXT,
+  category      TEXT,
+  planned_date  TEXT,
+  actual_date   TEXT,
+  status        TEXT NOT NULL DEFAULT 'planned'
+                CHECK (status IN ('planned', 'in_progress', 'done', 'cancelled', 'archived')),
+  result        TEXT,
+  notes         TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS reading_events (
+  reading_id  INTEGER NOT NULL REFERENCES readings(id) ON DELETE CASCADE,
+  event_id    INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (reading_id, event_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_date     ON events(planned_date DESC);
+CREATE INDEX IF NOT EXISTS idx_events_status   ON events(status);
+CREATE INDEX IF NOT EXISTS idx_events_category ON events(category);
+CREATE INDEX IF NOT EXISTS idx_reading_events  ON reading_events(event_id);
+`;
+
+if (currentVersion < 5) {
+  db.exec('BEGIN');
+  try {
+    db.exec(schemaV5);
     db.exec('COMMIT');
   } catch (error) {
     db.exec('ROLLBACK');

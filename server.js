@@ -171,6 +171,11 @@ const JOURNAL_TEXT_MAX = 3000;
 const JOURNAL_TAG_MAX = 40;
 const JOURNAL_TAGS_MAX = 20;
 
+const EVENT_STATUSES = ['planned', 'in_progress', 'done', 'cancelled', 'archived'];
+const EVENT_TITLE_MAX = 200;
+const EVENT_CATEGORY_MAX = 100;
+const EVENT_TEXT_MAX = 5000;
+
 function normalizeInterpretation(input) {
   const orientation = String(input?.orientation ?? 'upright').trim() || 'upright';
   if (!CARD_ORIENTATIONS.includes(orientation)) {
@@ -353,7 +358,22 @@ function getReadingDetail(id) {
     ORDER BY rc.position_index
   `).all(id);
 
-  return { ...reading, cards };
+  const events = db.prepare(`
+    SELECT
+      e.id,
+      e.title,
+      e.category,
+      e.planned_date,
+      e.actual_date,
+      e.status,
+      e.result
+    FROM reading_events re
+    JOIN events e ON e.id = re.event_id
+    WHERE re.reading_id = ?
+    ORDER BY COALESCE(e.actual_date, e.planned_date) DESC, e.id DESC
+  `).all(id);
+
+  return { ...reading, cards, events };
 }
 
 /* ---------- Дневник ---------- */
@@ -470,6 +490,93 @@ function journalHaystack(row) {
     row.card_name_ru,
     row.card_name_en,
     ...(row.tags ?? []),
+  ].filter(Boolean).join(' ').toLowerCase();
+}
+
+/* ---------- События ---------- */
+
+function normalizeEventDate(value, label) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    throw httpError(`${label} должна быть в формате ГГГГ-ММ-ДД`, 400);
+  }
+  const parsed = new Date(`${raw}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== raw) {
+    throw httpError('Такой даты не существует', 400);
+  }
+  return raw;
+}
+
+function normalizeEvent(input) {
+  const title = limitText(input?.title, EVENT_TITLE_MAX, 'название события');
+  if (!title) throw httpError('Укажите название события', 400);
+
+  const status = String(input?.status ?? 'planned').trim() || 'planned';
+  if (!EVENT_STATUSES.includes(status)) {
+    throw httpError('Неизвестный статус события', 400);
+  }
+
+  return {
+    title,
+    description: limitText(input?.description, EVENT_TEXT_MAX, 'описание') || null,
+    category: limitText(input?.category, EVENT_CATEGORY_MAX, 'категория') || null,
+    planned_date: normalizeEventDate(input?.planned_date, 'Планируемая дата'),
+    actual_date: normalizeEventDate(input?.actual_date, 'Фактическая дата'),
+    status,
+    result: limitText(input?.result, EVENT_TEXT_MAX, 'фактический результат') || null,
+    notes: limitText(input?.notes, EVENT_TEXT_MAX, 'заметки') || null,
+  };
+}
+
+const EVENT_SELECT = `
+  SELECT
+    e.*,
+    (SELECT COUNT(*) FROM reading_events re WHERE re.event_id = e.id) AS readings_count,
+    (SELECT GROUP_CONCAT(r.title, ' ')
+       FROM reading_events re
+       JOIN readings r ON r.id = re.reading_id
+      WHERE re.event_id = e.id) AS reading_titles,
+    (SELECT GROUP_CONCAT(c.name, ' ')
+       FROM reading_events re
+       JOIN readings r ON r.id = re.reading_id
+       LEFT JOIN clients c ON c.id = r.client_id
+      WHERE re.event_id = e.id) AS client_names
+  FROM events e
+`;
+
+function eventDetail(id) {
+  const event = db.prepare(`${EVENT_SELECT} WHERE e.id = ?`).get(id);
+  if (!event) throw httpError('Событие не найдено', 404);
+
+  const readings = db.prepare(`
+    SELECT
+      r.id,
+      r.title,
+      r.question,
+      r.reading_date,
+      r.status,
+      c.name AS client_name,
+      (SELECT COUNT(*) FROM reading_cards rc WHERE rc.reading_id = r.id) AS cards_count
+    FROM reading_events re
+    JOIN readings r ON r.id = re.reading_id
+    LEFT JOIN clients c ON c.id = r.client_id
+    WHERE re.event_id = ?
+    ORDER BY r.reading_date DESC, r.id DESC
+  `).all(id);
+
+  return { ...event, readings };
+}
+
+function eventHaystack(event) {
+  return [
+    event.title,
+    event.description,
+    event.category,
+    event.result,
+    event.notes,
+    event.reading_titles,
+    event.client_names,
   ].filter(Boolean).join(' ').toLowerCase();
 }
 
@@ -701,7 +808,24 @@ const routes = [
       ORDER BY reading_date DESC, id DESC
     `).all(id);
 
-    return { ...client, readings };
+    const events = db.prepare(`
+      SELECT DISTINCT
+        e.id,
+        e.title,
+        e.category,
+        e.planned_date,
+        e.actual_date,
+        e.status,
+        e.result,
+        (SELECT COUNT(*) FROM reading_events re2 WHERE re2.event_id = e.id) AS readings_count
+      FROM events e
+      JOIN reading_events re ON re.event_id = e.id
+      JOIN readings r ON r.id = re.reading_id
+      WHERE r.client_id = ?
+      ORDER BY COALESCE(e.actual_date, e.planned_date) DESC, e.id DESC
+    `).all(id);
+
+    return { ...client, readings, events };
   }],
 
   ['POST', /^\/api\/clients$/, async (req) => {
@@ -887,6 +1011,143 @@ const routes = [
     const result = db.prepare('DELETE FROM readings WHERE id = ?').run(id);
     if (result.changes === 0) throw httpError('Расклад не найден', 404);
     return { ok: true, deleted: id };
+  }],
+
+  ['GET', /^\/api\/events$/, (req, url) => {
+    const conditions = [];
+    const params = [];
+
+    const status = url.searchParams.get('status');
+    if (status) {
+      if (!EVENT_STATUSES.includes(status)) throw httpError('Неизвестный статус события', 400);
+      conditions.push('e.status = ?');
+      params.push(status);
+    }
+
+    const category = url.searchParams.get('category')?.trim();
+    if (category) {
+      conditions.push('e.category = ?');
+      params.push(category);
+    }
+
+    const from = url.searchParams.get('from');
+    if (from) {
+      conditions.push('e.planned_date >= ?');
+      params.push(from);
+    }
+
+    const to = url.searchParams.get('to');
+    if (to) {
+      conditions.push('e.planned_date <= ?');
+      params.push(to);
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    let rows = db.prepare(`
+      ${EVENT_SELECT}
+      ${where}
+      ORDER BY COALESCE(e.actual_date, e.planned_date) DESC, e.id DESC
+    `).all(...params);
+
+    const query = url.searchParams.get('q')?.trim().toLowerCase();
+    if (query) rows = rows.filter((row) => eventHaystack(row).includes(query));
+
+    return rows;
+  }],
+
+  ['GET', /^\/api\/events\/(\d+)$/, (req, url, match) => {
+    return eventDetail(Number(match[1]));
+  }],
+
+  ['POST', /^\/api\/events$/, async (req) => {
+    const event = normalizeEvent(await readJsonBody(req));
+
+    const result = db.prepare(`
+      INSERT INTO events (
+        title, description, category, planned_date, actual_date, status, result, notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      event.title,
+      event.description,
+      event.category,
+      event.planned_date,
+      event.actual_date,
+      event.status,
+      event.result,
+      event.notes,
+    );
+
+    return eventDetail(Number(result.lastInsertRowid));
+  }],
+
+  ['PUT', /^\/api\/events\/(\d+)$/, async (req, url, match) => {
+    const id = Number(match[1]);
+    const existing = db.prepare('SELECT id FROM events WHERE id = ?').get(id);
+    if (!existing) throw httpError('Событие не найдено', 404);
+
+    const event = normalizeEvent(await readJsonBody(req));
+
+    db.prepare(`
+      UPDATE events
+      SET title = ?, description = ?, category = ?, planned_date = ?, actual_date = ?,
+          status = ?, result = ?, notes = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(
+      event.title,
+      event.description,
+      event.category,
+      event.planned_date,
+      event.actual_date,
+      event.status,
+      event.result,
+      event.notes,
+      id,
+    );
+
+    return eventDetail(id);
+  }],
+
+  ['DELETE', /^\/api\/events\/(\d+)$/, (req, url, match) => {
+    const id = Number(match[1]);
+    const result = db.prepare('DELETE FROM events WHERE id = ?').run(id);
+    if (result.changes === 0) throw httpError('Событие не найдено', 404);
+    return { ok: true, deleted: id };
+  }],
+
+  ['POST', /^\/api\/events\/(\d+)\/readings$/, async (req, url, match) => {
+    const eventId = Number(match[1]);
+    const event = db.prepare('SELECT id FROM events WHERE id = ?').get(eventId);
+    if (!event) throw httpError('Событие не найдено', 404);
+
+    const body = await readJsonBody(req);
+    const readingId = Number(body?.reading_id);
+    if (!Number.isInteger(readingId) || readingId <= 0) {
+      throw httpError('Неверный идентификатор расклада', 400);
+    }
+    if (!db.prepare('SELECT id FROM readings WHERE id = ?').get(readingId)) {
+      throw httpError('Расклад не найден', 400);
+    }
+
+    db.prepare(`
+      INSERT OR IGNORE INTO reading_events (reading_id, event_id)
+      VALUES (?, ?)
+    `).run(readingId, eventId);
+
+    return eventDetail(eventId);
+  }],
+
+  ['DELETE', /^\/api\/events\/(\d+)\/readings\/(\d+)$/, (req, url, match) => {
+    const eventId = Number(match[1]);
+    const readingId = Number(match[2]);
+    const event = db.prepare('SELECT id FROM events WHERE id = ?').get(eventId);
+    if (!event) throw httpError('Событие не найдено', 404);
+
+    const result = db.prepare(`
+      DELETE FROM reading_events WHERE event_id = ? AND reading_id = ?
+    `).run(eventId, readingId);
+    if (result.changes === 0) throw httpError('Связь не найдена', 404);
+
+    return eventDetail(eventId);
   }],
 
   ['GET', /^\/api\/journal$/, (req, url) => {
