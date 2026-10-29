@@ -180,6 +180,12 @@ const OUTCOME_RATINGS = ['matched', 'partial', 'not_matched', 'insufficient', 'p
 const OUTCOME_TEXT_MAX = 5000;
 const OUTCOME_CONFIDENCES = ['low', 'medium', 'high'];
 
+const FEEDBACK_TOPICS = ['bug', 'inaccuracy', 'suggestion', 'other'];
+const FEEDBACK_MESSAGE_MAX = 5000;
+const FEEDBACK_PAGE_MAX = 500;
+const FEEDBACK_PAGE_TITLE_MAX = 300;
+const FEEDBACK_USER_AGENT_MAX = 500;
+
 function normalizeInterpretation(input) {
   const orientation = String(input?.orientation ?? 'upright').trim() || 'upright';
   if (!CARD_ORIENTATIONS.includes(orientation)) {
@@ -668,6 +674,31 @@ function normalizeOutcome(input) {
   };
 }
 
+function normalizeFeedback(input) {
+  const topic = String(input?.topic ?? 'other').trim() || 'other';
+  if (!FEEDBACK_TOPICS.includes(topic)) {
+    throw httpError('Неизвестная тема сообщения', 400);
+  }
+
+  const message = limitText(input?.message, FEEDBACK_MESSAGE_MAX, 'сообщение');
+  if (!message) {
+    throw httpError('Опишите, что случилось или что хочется улучшить', 400);
+  }
+
+  const clip = (value, max) => {
+    const text = String(value ?? '').trim();
+    return text ? text.slice(0, max) : null;
+  };
+
+  return {
+    topic,
+    message,
+    page: clip(input?.page, FEEDBACK_PAGE_MAX),
+    page_title: clip(input?.page_title, FEEDBACK_PAGE_TITLE_MAX),
+    user_agent: clip(input?.user_agent, FEEDBACK_USER_AGENT_MAX),
+  };
+}
+
 function insertReadingVersion(readingId, kind, interpretation, summary, comment) {
   const body = interpretation || null;
   const summaryText = summary || null;
@@ -933,6 +964,41 @@ const routes = [
   })],
 
   ['GET', /^\/api\/stats$/, () => getStats()],
+
+  ['GET', /^\/api\/feedback$/, (req, url) => {
+    const topic = url.searchParams.get('topic');
+    if (topic && !FEEDBACK_TOPICS.includes(topic)) {
+      throw httpError('Неизвестная тема сообщения', 400);
+    }
+
+    return topic
+      ? db.prepare(`
+          SELECT * FROM feedback_messages
+          WHERE topic = ?
+          ORDER BY created_at DESC, id DESC
+        `).all(topic)
+      : db.prepare(`
+          SELECT * FROM feedback_messages
+          ORDER BY created_at DESC, id DESC
+        `).all();
+  }],
+
+  ['POST', /^\/api\/feedback$/, async (req) => {
+    const feedback = normalizeFeedback(await readJsonBody(req));
+    const result = db.prepare(`
+      INSERT INTO feedback_messages (topic, message, page, page_title, user_agent)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(
+      feedback.topic,
+      feedback.message,
+      feedback.page,
+      feedback.page_title,
+      feedback.user_agent,
+    );
+
+    return db.prepare('SELECT * FROM feedback_messages WHERE id = ?')
+      .get(Number(result.lastInsertRowid));
+  }],
 
   ['GET', /^\/api\/statistics$/, () => getStatistics()],
 

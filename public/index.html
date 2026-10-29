@@ -27,7 +27,18 @@
           <span class="status-dot" id="status-dot"></span>
           <span id="status-text">проверка сервера…</span>
         </div>
-        <div class="developer">Разработчик: nbobrova</div>
+        <div class="developer-row">
+          <span class="developer">Разработчик: nbobrova</span>
+          <button class="developer-mail" id="developer-mail" type="button"
+                  title="Написать разработчику" aria-label="Написать разработчику">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"
+                 aria-hidden="true" focusable="false">
+              <rect x="3" y="5" width="18" height="14" rx="2"></rect>
+              <path d="m3.5 6.5 8.5 6 8.5-6"></path>
+            </svg>
+          </button>
+        </div>
       </div>
     </aside>
 
@@ -39,6 +50,42 @@
       <section class="view" id="view"></section>
     </main>
   </div>
+
+  <dialog class="feedback-dialog" id="feedback-dialog" aria-labelledby="feedback-title">
+    <form class="form feedback-form" id="feedback-form" novalidate>
+      <div class="feedback-head">
+        <div>
+          <h2 id="feedback-title">Сообщение разработчику</h2>
+          <p class="muted feedback-sub">Баг, неточность или идея — сообщение сохранится в базе.</p>
+        </div>
+        <button class="icon-btn" type="button" id="feedback-close" aria-label="Закрыть">×</button>
+      </div>
+
+      <label><span>Тема<span class="req">*</span></span>
+        <select name="topic">
+          <option value="bug">Баг</option>
+          <option value="inaccuracy">Неточность</option>
+          <option value="suggestion">Предложение</option>
+          <option value="other">Другое</option>
+        </select>
+      </label>
+
+      <label><span>Что случилось или что хочется улучшить<span class="req">*</span></span>
+        <textarea name="message" rows="7" maxlength="5000" required
+                  placeholder="Опишите, что произошло, на какой странице и что вы ожидали увидеть"></textarea>
+      </label>
+
+      <p class="field-hint muted" id="feedback-page-hint"></p>
+      <p class="form-error" id="feedback-error"></p>
+      <p class="form-ok" id="feedback-ok" hidden>Сообщение сохранено. Спасибо!</p>
+
+      <div class="form-actions">
+        <button class="btn btn-primary" type="submit">Отправить</button>
+        <button class="btn" type="button" id="feedback-cancel">Отмена</button>
+      </div>
+      <p class="feedback-view-all"><a href="#/feedback" id="feedback-view-all">Сохранённые сообщения →</a></p>
+    </form>
+  </dialog>
 
   <script type="module" src="app.js"></script>
 </body>

@@ -138,6 +138,13 @@ const VERSION_KIND_LABELS = {
   final: 'итоговая',
 };
 
+const FEEDBACK_TOPIC_LABELS = {
+  bug: 'Баг',
+  inaccuracy: 'Неточность',
+  suggestion: 'Предложение',
+  other: 'Другое',
+};
+
 function outcomeRatingClass(rating) {
   return `rating-${String(rating ?? 'pending').replace(/_/g, '-')}`;
 }
@@ -5606,6 +5613,152 @@ function renderStub(section) {
   `;
 }
 
+/* ---------- Обратная связь ---------- */
+
+function openFeedbackDialog() {
+  const dialog = document.getElementById('feedback-dialog');
+  const form = document.getElementById('feedback-form');
+  if (!dialog || !form) return;
+
+  form.reset();
+  form.elements.topic.value = 'bug';
+  syncCustomSelect(form.elements.topic);
+
+  const errorEl = document.getElementById('feedback-error');
+  const okEl = document.getElementById('feedback-ok');
+  const submit = form.querySelector('button[type="submit"]');
+  const pageHint = document.getElementById('feedback-page-hint');
+
+  if (errorEl) errorEl.textContent = '';
+  if (okEl) okEl.hidden = true;
+  if (submit) submit.disabled = false;
+  if (pageHint) {
+    pageHint.textContent = `Страница: ${location.hash || '#/'} · ${document.title}`;
+  }
+
+  if (typeof dialog.showModal === 'function') {
+    if (!dialog.open) dialog.showModal();
+  } else {
+    dialog.setAttribute('open', '');
+  }
+
+  setTimeout(() => form.elements.message.focus(), 60);
+}
+
+function setupFeedback() {
+  const openButton = document.getElementById('developer-mail');
+  const dialog = document.getElementById('feedback-dialog');
+  const form = document.getElementById('feedback-form');
+  if (!openButton || !dialog || !form) return;
+
+  enhanceSelects(form);
+
+  const closeDialog = () => {
+    if (dialog.open) dialog.close();
+    else dialog.removeAttribute('open');
+  };
+
+  openButton.addEventListener('click', openFeedbackDialog);
+  document.getElementById('feedback-close')?.addEventListener('click', closeDialog);
+  document.getElementById('feedback-cancel')?.addEventListener('click', closeDialog);
+  document.getElementById('feedback-view-all')?.addEventListener('click', () => {
+    closeDialog();
+    location.hash = '#/feedback';
+  });
+
+  dialog.addEventListener('click', (event) => {
+    if (event.target === dialog) closeDialog();
+  });
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+
+    const errorEl = document.getElementById('feedback-error');
+    const okEl = document.getElementById('feedback-ok');
+    const submit = form.querySelector('button[type="submit"]');
+    const message = form.elements.message.value.trim();
+
+    if (errorEl) errorEl.textContent = '';
+    if (okEl) okEl.hidden = true;
+
+    if (!message) {
+      if (errorEl) errorEl.textContent = 'Опишите, что случилось или что хочется улучшить.';
+      form.elements.message.focus();
+      return;
+    }
+
+    if (submit) submit.disabled = true;
+
+    try {
+      await api('/api/feedback', {
+        method: 'POST',
+        body: JSON.stringify({
+          topic: form.elements.topic.value,
+          message,
+          page: location.hash || '#/',
+          page_title: document.title,
+          user_agent: navigator.userAgent,
+        }),
+      });
+
+      if (okEl) okEl.hidden = false;
+      form.reset();
+      form.elements.topic.value = 'bug';
+      syncCustomSelect(form.elements.topic);
+      if (submit) submit.disabled = false;
+
+      setTimeout(closeDialog, 900);
+    } catch (error) {
+      if (errorEl) errorEl.textContent = error.message;
+      if (submit) submit.disabled = false;
+    }
+  });
+}
+
+async function renderFeedbackList() {
+  viewEl.innerHTML = '<p class="muted">Загрузка сообщений…</p>';
+
+  let messages = [];
+  try {
+    messages = await api('/api/feedback');
+  } catch (error) {
+    viewEl.innerHTML = `
+      <div class="panel">
+        <p>${escapeHtml(error.message)}</p>
+        <p class="hint"><a href="#/">← на главную</a></p>
+      </div>
+    `;
+    return;
+  }
+
+  const rows = messages.map((item) => `
+    <div class="feedback-row">
+      <div class="feedback-row-head">
+        <span class="feedback-topic feedback-topic-${item.topic}">${FEEDBACK_TOPIC_LABELS[item.topic] ?? item.topic}</span>
+        <span class="muted">${formatDateTime(item.created_at)}</span>
+      </div>
+      <div class="feedback-message">${escapeHtml(item.message)}</div>
+      <div class="feedback-meta muted">
+        ${item.page ? `Страница: <code>${escapeHtml(item.page)}</code>` : ''}
+        ${item.page_title ? ` · ${escapeHtml(item.page_title)}` : ''}
+      </div>
+    </div>
+  `).join('');
+
+  viewEl.innerHTML = `
+    <a class="back-link" href="#/">← на главную</a>
+    <div class="cards-toolbar">
+      <p class="muted">Всего сообщений: ${messages.length}. Новые сверху.</p>
+      <button class="btn btn-primary" type="button" id="feedback-new">Написать сообщение</button>
+    </div>
+    ${messages.length > 0
+      ? `<div class="panel feedback-list">${rows}</div>`
+      : '<div class="empty">Пока сообщений нет. Нажмите «Написать сообщение», чтобы отправить первое.</div>'}
+  `;
+
+  document.getElementById('feedback-new')?.addEventListener('click', openFeedbackDialog);
+}
+
 /* ---------- Маршрутизация ---------- */
 
 function route() {
@@ -5613,14 +5766,19 @@ function route() {
   const [raw, queryString = ''] = hash.split('?');
   const params = new URLSearchParams(queryString);
   const [id, action, sub] = raw.split('/');
-  const section = SECTIONS.find((item) => item.id === id) ?? SECTIONS[0];
+  const section = SECTIONS.find((item) => item.id === id)
+    ?? (id === 'feedback'
+      ? { id: 'feedback', title: 'Сообщения разработчику', subtitle: 'Баги, неточности и предложения' }
+      : SECTIONS[0]);
 
   titleEl.textContent = section.title;
   subtitleEl.textContent = section.subtitle;
   document.title = `${section.title} · Таро`;
   renderNav(section.id);
 
-  if (section.id === 'overview') {
+  if (id === 'feedback') {
+    renderFeedbackList();
+  } else if (section.id === 'overview') {
     renderOverview();
   } else if (section.id === 'cards' && action && sub === 'edit') {
     renderCardEdit(action);
@@ -5697,6 +5855,8 @@ async function checkServer() {
     text.textContent = 'сервер не отвечает';
   }
 }
+
+setupFeedback();
 
 window.addEventListener('hashchange', route);
 route();

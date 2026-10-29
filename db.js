@@ -19,7 +19,7 @@ db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
 db.exec('PRAGMA busy_timeout = 5000');
 
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 const schemaV1 = `
 CREATE TABLE IF NOT EXISTS cards (
@@ -333,6 +333,37 @@ if (currentVersion < 7) {
   db.exec('BEGIN');
   try {
     db.exec(schemaV7);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+// Версия 8: сообщения разработчику.
+// Пока это локальный «входящий ящик»: баг, неточность или предложение
+// сохраняются в базе вместе со страницей и браузером. Позже сюда можно
+// добавить отправку письма, не меняя интерфейс.
+const schemaV8 = `
+CREATE TABLE IF NOT EXISTS feedback_messages (
+  id          INTEGER PRIMARY KEY,
+  topic       TEXT NOT NULL DEFAULT 'other'
+              CHECK (topic IN ('bug', 'inaccuracy', 'suggestion', 'other')),
+  message     TEXT NOT NULL,
+  page        TEXT,
+  page_title  TEXT,
+  user_agent  TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback_messages(created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_feedback_topic   ON feedback_messages(topic, created_at DESC);
+`;
+
+if (currentVersion < 8) {
+  db.exec('BEGIN');
+  try {
+    db.exec(schemaV8);
     db.exec('COMMIT');
   } catch (error) {
     db.exec('ROLLBACK');
