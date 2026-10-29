@@ -624,6 +624,8 @@ async function renderOverview() {
   viewEl.innerHTML = `
     <div class="stats">${TILES.map(statTile).join('')}</div>
 
+    <div id="overview-calendar" class="overview-calendar"><p class="muted">Загрузка…</p></div>
+
     <div class="panel" id="pending-outcomes-panel">
       <div class="panel-head">
         <h2>Ожидают оценки</h2>
@@ -650,11 +652,12 @@ async function renderOverview() {
   `;
 
   try {
-    const [statsResponse, readingsResponse, journalResponse, pendingResponse] = await Promise.all([
+    const [statsResponse, readingsResponse, journalResponse, pendingResponse, eventsResponse] = await Promise.all([
       fetch('/api/stats'),
       fetch('/api/readings'),
       fetch('/api/journal'),
       fetch('/api/outcomes/pending'),
+      fetch('/api/events'),
     ]);
     if (!statsResponse.ok) throw new Error(`HTTP ${statsResponse.status}`);
 
@@ -720,6 +723,49 @@ async function renderOverview() {
             </a>
           `;
         }).join('');
+
+    const events = eventsResponse.ok ? await eventsResponse.json() : [];
+    const calendarHost = document.getElementById('overview-calendar');
+    let overviewMonth = todayIso().slice(0, 7);
+
+    const paintOverviewCalendar = () => {
+      calendarHost.innerHTML = calendarMarkup({
+        month: overviewMonth,
+        entries,
+        events,
+        compact: true,
+      });
+    };
+
+    calendarHost.addEventListener('click', (event) => {
+      const shift = event.target.closest('[data-calendar-shift]');
+      if (shift) {
+        overviewMonth = shiftMonth(overviewMonth, Number(shift.dataset.calendarShift));
+        paintOverviewCalendar();
+        return;
+      }
+
+      if (event.target.closest('[data-calendar-today]')) {
+        overviewMonth = todayIso().slice(0, 7);
+        paintOverviewCalendar();
+        return;
+      }
+
+      const add = event.target.closest('[data-calendar-add]');
+      if (add) {
+        event.preventDefault();
+        openCalendarMenu(add, add.dataset.calendarAdd);
+        return;
+      }
+
+      const day = event.target.closest('[data-calendar-date]');
+      if (day) {
+        const date = day.dataset.calendarDate;
+        location.hash = `#/journal?view=calendar&month=${date.slice(0, 7)}&date=${date}`;
+      }
+    });
+
+    paintOverviewCalendar();
   } catch (error) {
     console.error('Не удалось загрузить статистику:', error);
   }
@@ -3384,11 +3430,14 @@ async function renderEventView(id) {
 
 async function renderEventForm(id, options = {}) {
   const isEdit = Boolean(id);
+  const calendarDate = !isEdit && /^\d{4}-\d{2}-\d{2}$/.test(String(options.date ?? ''))
+    ? options.date
+    : '';
   let event = {
     title: '',
     description: '',
     category: '',
-    planned_date: todayIso(),
+    planned_date: calendarDate || todayIso(),
     actual_date: '',
     status: 'planned',
     result: '',
@@ -3421,10 +3470,15 @@ async function renderEventForm(id, options = {}) {
   subtitleEl.textContent = isEdit ? event.title : 'Что произойдёт и чем закончилось';
   document.title = `${titleEl.textContent} · Таро`;
 
-  const backHref = isEdit ? `#/events/${event.id}` : '#/events';
+  const calendarHref = calendarDate
+    ? `#/journal?view=calendar&month=${calendarDate.slice(0, 7)}&date=${calendarDate}`
+    : '';
+  const backHref = isEdit
+    ? `#/events/${event.id}`
+    : calendarHref || '#/events';
 
   viewEl.innerHTML = `
-    <a class="back-link" href="${backHref}">← назад</a>
+    <a class="back-link" href="${backHref}">← ${calendarHref ? 'в календарь' : 'назад'}</a>
     ${linkedReading
       ? `<p class="event-link-note">Событие будет связано с раскладом
            <a href="#/readings/${linkedReading.id}">«${escapeHtml(linkedReading.title || linkedReading.question || 'Расклад')}»</a>.</p>`
@@ -3514,7 +3568,11 @@ async function renderEventForm(id, options = {}) {
         }
       }
 
-      location.hash = `#/events/${saved.id}`;
+      if (calendarHref) {
+        location.hash = calendarHref;
+      } else {
+        location.hash = `#/events/${saved.id}`;
+      }
     } catch (error) {
       errorEl.textContent = error.message;
       submitButton.disabled = false;
@@ -3648,6 +3706,247 @@ function journalEntryRow(entry) {
   `;
 }
 
+/* ---------- Календарь ---------- */
+
+const CALENDAR_WEEKDAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+const CALENDAR_HIDDEN_EVENT_STATUSES = ['cancelled', 'archived'];
+
+let calendarMenuState = null;
+
+function calendarEventDate(event) {
+  return event.actual_date || event.planned_date || '';
+}
+
+function closeCalendarMenu() {
+  if (!calendarMenuState) return;
+  const { menu, anchor } = calendarMenuState;
+  const restoreFocus = menu.contains(document.activeElement);
+  menu.remove();
+  anchor?.classList.remove('is-open');
+  anchor?.setAttribute('aria-expanded', 'false');
+  calendarMenuState = null;
+  if (restoreFocus) anchor?.focus({ preventScroll: true });
+}
+
+function openCalendarMenu(anchor, date) {
+  closeCalendarMenu();
+
+  const menu = document.createElement('div');
+  menu.className = 'calendar-add-popover';
+  menu.setAttribute('role', 'menu');
+  menu.innerHTML = `
+    <a role="menuitem" href="#/journal/new?date=${encodeURIComponent(date)}">
+      <span class="calendar-add-icon" aria-hidden="true">✎</span>
+      Запись в дневнике
+    </a>
+    <a role="menuitem" href="#/events/new?date=${encodeURIComponent(date)}">
+      <span class="calendar-add-icon" aria-hidden="true">◈</span>
+      Событие
+    </a>
+  `;
+
+  document.body.appendChild(menu);
+
+  const rect = anchor.getBoundingClientRect();
+  const width = menu.offsetWidth || 210;
+  const height = menu.offsetHeight || 96;
+  const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
+  const top = rect.bottom + 6 + height > window.innerHeight - 8
+    ? Math.max(8, rect.top - height - 6)
+    : rect.bottom + 6;
+
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+  anchor.classList.add('is-open');
+  anchor.setAttribute('aria-expanded', 'true');
+  calendarMenuState = { menu, anchor };
+  menu.querySelector('a')?.focus({ preventScroll: true });
+}
+
+document.addEventListener('click', (event) => {
+  if (!calendarMenuState) return;
+  if (calendarMenuState.menu.contains(event.target) || calendarMenuState.anchor.contains(event.target)) return;
+  closeCalendarMenu();
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') closeCalendarMenu();
+});
+
+window.addEventListener('resize', closeCalendarMenu);
+window.addEventListener('scroll', closeCalendarMenu, true);
+window.addEventListener('hashchange', closeCalendarMenu);
+
+function calendarEventRow(event) {
+  return `
+    <a class="calendar-event-row" href="#/events/${event.id}">
+      <div class="list-main">
+        <div class="list-title">${escapeHtml(event.title)}</div>
+        <div class="list-sub">${[
+          event.category,
+          event.actual_date ? `факт ${formatDate(event.actual_date)}` : null,
+        ].filter(Boolean).map(escapeHtml).join(' · ') || 'без категории'}</div>
+      </div>
+      <span class="status-badge ${eventStatusClass(event.status)}">${EVENT_STATUS_LABELS[event.status] ?? event.status}</span>
+    </a>
+  `;
+}
+
+function calendarMarkup({
+  month,
+  selectedDate = '',
+  entries = [],
+  events = [],
+  showEvents = true,
+  includeArchived = false,
+  compact = false,
+}) {
+  const [year, monthNumber] = month.split('-').map(Number);
+  const monthIndex = monthNumber - 1;
+  const firstDay = new Date(year, monthIndex, 1);
+  const offset = (firstDay.getDay() + 6) % 7;
+  const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
+  const totalCells = Math.ceil((offset + daysInMonth) / 7) * 7;
+  const today = todayIso();
+
+  const visibleEvents = showEvents
+    ? events.filter((event) => {
+        if (!calendarEventDate(event)) return false;
+        if (!includeArchived && CALENDAR_HIDDEN_EVENT_STATUSES.includes(event.status)) return false;
+        return true;
+      })
+    : [];
+
+  const entriesByDate = new Map();
+  for (const entry of entries) {
+    const list = entriesByDate.get(entry.entry_date) ?? [];
+    list.push(entry);
+    entriesByDate.set(entry.entry_date, list);
+  }
+
+  const eventsByDate = new Map();
+  for (const event of visibleEvents) {
+    const date = calendarEventDate(event);
+    const list = eventsByDate.get(date) ?? [];
+    list.push(event);
+    eventsByDate.set(date, list);
+  }
+
+  const monthEntries = entries.filter((entry) => entry.entry_date.startsWith(`${month}-`));
+  const monthEvents = visibleEvents.filter((event) => calendarEventDate(event).startsWith(`${month}-`));
+
+  const cells = [];
+  for (let index = 0; index < totalCells; index += 1) {
+    const dayNumber = index - offset + 1;
+    const date = new Date(year, monthIndex, dayNumber);
+    const iso = isoFromParts(date.getFullYear(), date.getMonth(), date.getDate());
+    const inMonth = date.getMonth() === monthIndex;
+    const dayEntries = entriesByDate.get(iso) ?? [];
+    const dayEvents = eventsByDate.get(iso) ?? [];
+    const selected = selectedDate === iso;
+
+    const labelParts = [formatLongDate(iso)];
+    if (dayEntries.length > 0) {
+      labelParts.push(`${dayEntries.length} ${plural(dayEntries.length, ['запись', 'записи', 'записей'])}`);
+    }
+    if (dayEvents.length > 0) {
+      labelParts.push(`${dayEvents.length} ${plural(dayEvents.length, ['событие', 'события', 'событий'])}`);
+    }
+
+    cells.push(`
+      <div class="calendar-day${inMonth ? '' : ' is-outside'}${selected ? ' is-selected' : ''}${iso === today ? ' is-today' : ''}">
+        <button type="button" class="calendar-day-btn" data-calendar-date="${iso}"
+                aria-label="${escapeHtml(labelParts.join(', '))}">
+          <span class="calendar-day-num">${date.getDate()}</span>
+          <span class="calendar-day-marks">
+            ${dayEntries.length > 0 ? `<span class="calendar-mark calendar-mark-entry" title="${dayEntries.length} ${plural(dayEntries.length, ['запись', 'записи', 'записей'])}">${dayEntries.length}</span>` : ''}
+            ${dayEvents.length > 0 ? `<span class="calendar-mark calendar-mark-event" title="${dayEvents.length} ${plural(dayEvents.length, ['событие', 'события', 'событий'])}">${dayEvents.length}</span>` : ''}
+          </span>
+        </button>
+        <button type="button" class="calendar-add" data-calendar-add="${iso}"
+                aria-haspopup="menu" aria-expanded="false"
+                title="Добавить на ${escapeHtml(formatLongDate(iso))}"
+                aria-label="Добавить на ${escapeHtml(formatLongDate(iso))}">+</button>
+      </div>
+    `);
+  }
+
+  const monthSummary = [
+    `${monthEntries.length} ${plural(monthEntries.length, ['запись', 'записи', 'записей'])}`,
+    showEvents
+      ? `${monthEvents.length} ${plural(monthEvents.length, ['событие', 'события', 'событий'])}`
+      : 'события скрыты',
+  ].join(' · ');
+
+  const selectedEntries = selectedDate ? (entriesByDate.get(selectedDate) ?? []) : [];
+  const selectedEvents = selectedDate ? (eventsByDate.get(selectedDate) ?? []) : [];
+  const selectedParts = [
+    `${selectedEntries.length} ${plural(selectedEntries.length, ['запись', 'записи', 'записей'])}`,
+    `${selectedEvents.length} ${plural(selectedEvents.length, ['событие', 'события', 'событий'])}`,
+  ].join(' · ');
+
+  const selectedHtml = compact
+    ? ''
+    : selectedDate
+      ? `
+        <div class="calendar-selected">
+          <div class="calendar-selected-head">
+            <div>
+              <div class="calendar-selected-title">${formatLongDate(selectedDate)}</div>
+              <div class="muted">${selectedParts}</div>
+            </div>
+            <div class="calendar-selected-actions">
+              <a class="btn btn-small" href="#/journal?from=${selectedDate}&to=${selectedDate}&view=list">Показать в списке</a>
+              <button class="btn btn-primary btn-small" type="button" data-calendar-add="${selectedDate}"
+                      aria-haspopup="menu" aria-expanded="false">Добавить</button>
+            </div>
+          </div>
+          ${selectedEntries.length > 0
+            ? `<div class="calendar-list-label">Записи</div>
+               <div class="panel journal-entries">${selectedEntries.map(journalEntryRow).join('')}</div>`
+            : ''}
+          ${selectedEvents.length > 0
+            ? `<div class="calendar-list-label">События</div>
+               <div class="panel calendar-event-list">${selectedEvents.map(calendarEventRow).join('')}</div>`
+            : ''}
+          ${selectedEntries.length === 0 && selectedEvents.length === 0
+            ? `<div class="panel empty">На этот день ничего нет.
+                 <button class="link-button" type="button" data-calendar-add="${selectedDate}">Добавить запись или событие</button>
+               </div>`
+            : ''}
+        </div>
+      `
+      : '<p class="calendar-hint">Нажмите на день, чтобы увидеть записи и события, или на «+» в углу дня, чтобы добавить новое.</p>';
+
+  return `
+    <div class="panel journal-calendar${compact ? ' calendar-compact' : ''}">
+      <div class="calendar-head">
+        <div>
+          <h2 class="calendar-title">${monthLabel(month)}</h2>
+          <div class="muted calendar-summary">${monthSummary}</div>
+        </div>
+        <div class="calendar-nav">
+          ${compact
+            ? `<a class="panel-link calendar-full-link" href="#/journal?view=calendar&month=${month}">весь календарь →</a>`
+            : ''}
+          <button class="btn btn-small" type="button" data-calendar-shift="-1" title="Предыдущий месяц">‹</button>
+          <button class="btn btn-small" type="button" data-calendar-today>Сегодня</button>
+          <button class="btn btn-small" type="button" data-calendar-shift="1" title="Следующий месяц">›</button>
+        </div>
+      </div>
+      <div class="calendar-legend">
+        <span class="calendar-legend-item"><span class="calendar-mark calendar-mark-entry"></span>записи</span>
+        ${showEvents ? '<span class="calendar-legend-item"><span class="calendar-mark calendar-mark-event"></span>события</span>' : ''}
+      </div>
+      <div class="calendar-grid">
+        ${CALENDAR_WEEKDAYS.map((weekday) => `<div class="calendar-weekday">${weekday}</div>`).join('')}
+        ${cells.join('')}
+      </div>
+      ${selectedHtml}
+    </div>
+  `;
+}
+
 async function renderJournal(params = new URLSearchParams()) {
   const today = todayIso();
   const state = {
@@ -3659,6 +3958,8 @@ async function renderJournal(params = new URLSearchParams()) {
     view: params.get('view') === 'calendar' ? 'calendar' : 'list',
     month: parseMonth(params.get('month')),
     selectedDate: '',
+    showEvents: params.get('events') !== '0',
+    includeArchived: params.get('archived') === '1',
   };
 
   const dateParam = params.get('date') ?? '';
@@ -3693,6 +3994,11 @@ async function renderJournal(params = new URLSearchParams()) {
       <button class="btn btn-small reset-filters" type="button" id="journal-reset" hidden>Сбросить фильтры</button>
     </div>
 
+    <div class="calendar-filters" id="journal-calendar-filters" hidden>
+      <button type="button" class="chip" data-calendar-toggle="events" aria-pressed="true">Показывать события</button>
+      <button type="button" class="chip" data-calendar-toggle="archived" aria-pressed="false">Отменённые и архивные</button>
+    </div>
+
     <div class="chips journal-tag-filter" id="journal-tags"></div>
 
     <p class="result-count muted" id="journal-count"></p>
@@ -3707,11 +4013,17 @@ async function renderJournal(params = new URLSearchParams()) {
   const toInput = document.getElementById('journal-to');
   const resetButton = document.getElementById('journal-reset');
   const viewHost = document.getElementById('journal-view');
+  const calendarFilters = document.getElementById('journal-calendar-filters');
 
   let entries;
   let clients;
+  let events;
   try {
-    [entries, clients] = await Promise.all([api('/api/journal'), api('/api/clients')]);
+    [entries, clients, events] = await Promise.all([
+      api('/api/journal'),
+      api('/api/clients'),
+      api('/api/events'),
+    ]);
   } catch (error) {
     list.innerHTML = `<p class="muted">${escapeHtml(error.message)}</p>`;
     return;
@@ -3755,10 +4067,26 @@ async function renderJournal(params = new URLSearchParams()) {
       button.classList.toggle('is-active', active);
       button.setAttribute('aria-pressed', String(active));
     }
+    calendarFilters.hidden = state.view !== 'calendar';
+
+    for (const button of calendarFilters.querySelectorAll('[data-calendar-toggle]')) {
+      const active = button.dataset.calendarToggle === 'events'
+        ? state.showEvents
+        : state.includeArchived;
+      button.classList.toggle('is-active', active);
+      button.setAttribute('aria-pressed', String(active));
+    }
   }
 
   function updateReset() {
-    resetButton.hidden = !(state.query.trim() || state.clientId || state.from || state.to || state.tag);
+    resetButton.hidden = !(
+      state.query.trim()
+      || state.clientId
+      || state.from
+      || state.to
+      || state.tag
+      || (state.view === 'calendar' && (!state.showEvents || state.includeArchived))
+    );
   }
 
   function syncUrl() {
@@ -3767,6 +4095,8 @@ async function renderJournal(params = new URLSearchParams()) {
       next.set('view', 'calendar');
       next.set('month', state.month);
       if (state.selectedDate) next.set('date', state.selectedDate);
+      if (!state.showEvents) next.set('events', '0');
+      if (state.includeArchived) next.set('archived', '1');
     }
     if (state.query.trim()) next.set('q', state.query.trim());
     if (state.clientId) next.set('client', state.clientId);
@@ -3836,90 +4166,15 @@ async function renderJournal(params = new URLSearchParams()) {
   }
 
   function paintCalendar(visible) {
-    const [year, monthNumber] = state.month.split('-').map(Number);
-    const monthIndex = monthNumber - 1;
-    const firstDay = new Date(year, monthIndex, 1);
-    const offset = (firstDay.getDay() + 6) % 7;
-    const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
-    const totalCells = Math.ceil((offset + daysInMonth) / 7) * 7;
-    const weekdays = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
-
-    const byDate = new Map();
-    for (const entry of visible) {
-      const dayEntries = byDate.get(entry.entry_date) ?? [];
-      dayEntries.push(entry);
-      byDate.set(entry.entry_date, dayEntries);
-    }
-
-    const monthEntries = visible.filter((entry) => entry.entry_date.startsWith(`${state.month}-`));
-    counter.textContent = `${monthEntries.length} ${plural(monthEntries.length, ['запись', 'записи', 'записей'])} · ${monthLabel(state.month)}`;
-
-    const cells = [];
-    for (let index = 0; index < totalCells; index += 1) {
-      const dayNumber = index - offset + 1;
-      const date = new Date(year, monthIndex, dayNumber);
-      const iso = isoFromParts(date.getFullYear(), date.getMonth(), date.getDate());
-      const inMonth = date.getMonth() === monthIndex;
-      const dayEntries = byDate.get(iso) ?? [];
-      const selected = state.selectedDate === iso;
-      const label = `${formatLongDate(iso)}${dayEntries.length
-        ? `, ${dayEntries.length} ${plural(dayEntries.length, ['запись', 'записи', 'записей'])}`
-        : ''}`;
-
-      cells.push(`
-        <div class="calendar-day${inMonth ? '' : ' is-outside'}${selected ? ' is-selected' : ''}${iso === today ? ' is-today' : ''}">
-          <button type="button" class="calendar-day-btn" data-calendar-date="${iso}"
-                  aria-label="${escapeHtml(label)}">
-            <span class="calendar-day-num">${date.getDate()}</span>
-            ${dayEntries.length > 0 ? `<span class="calendar-day-count">${dayEntries.length}</span>` : ''}
-          </button>
-          <a class="calendar-add" href="#/journal/new?date=${iso}"
-             title="Добавить запись на ${escapeHtml(formatLongDate(iso))}"
-             aria-label="Добавить запись на ${escapeHtml(formatLongDate(iso))}">+</a>
-        </div>
-      `);
-    }
-
-    const selectedEntries = state.selectedDate ? (byDate.get(state.selectedDate) ?? []) : [];
-    const selectedHtml = state.selectedDate
-      ? `
-        <div class="calendar-selected">
-          <div class="calendar-selected-head">
-            <div>
-              <div class="calendar-selected-title">${formatLongDate(state.selectedDate)}</div>
-              <div class="muted">${selectedEntries.length
-                ? `${selectedEntries.length} ${plural(selectedEntries.length, ['запись', 'записи', 'записей'])}`
-                : 'записей нет'}</div>
-            </div>
-            <div class="calendar-selected-actions">
-              <a class="btn btn-small" href="#/journal?from=${state.selectedDate}&to=${state.selectedDate}&view=list">Показать в списке</a>
-              <a class="btn btn-primary btn-small" href="#/journal/new?date=${state.selectedDate}">Добавить запись</a>
-            </div>
-          </div>
-          ${selectedEntries.length > 0
-            ? `<div class="panel journal-entries">${selectedEntries.map(journalEntryRow).join('')}</div>`
-            : `<div class="panel empty">На этот день записей нет. <a href="#/journal/new?date=${state.selectedDate}">Добавить</a></div>`}
-        </div>
-      `
-      : '<p class="calendar-hint">Нажмите на день, чтобы увидеть записи, или на «+» в углу дня, чтобы добавить новую.</p>';
-
-    list.innerHTML = `
-      <div class="panel journal-calendar">
-        <div class="calendar-head">
-          <h2 class="calendar-title">${monthLabel(state.month)}</h2>
-          <div class="calendar-nav">
-            <button class="btn btn-small" type="button" data-calendar-shift="-1" title="Предыдущий месяц">‹</button>
-            <button class="btn btn-small" type="button" data-calendar-today>Сегодня</button>
-            <button class="btn btn-small" type="button" data-calendar-shift="1" title="Следующий месяц">›</button>
-          </div>
-        </div>
-        <div class="calendar-grid">
-          ${weekdays.map((weekday) => `<div class="calendar-weekday">${weekday}</div>`).join('')}
-          ${cells.join('')}
-        </div>
-        ${selectedHtml}
-      </div>
-    `;
+    counter.textContent = '';
+    list.innerHTML = calendarMarkup({
+      month: state.month,
+      selectedDate: state.selectedDate,
+      entries: visible,
+      events,
+      showEvents: state.showEvents,
+      includeArchived: state.includeArchived,
+    });
   }
 
   function paint() {
@@ -3944,6 +4199,18 @@ async function renderJournal(params = new URLSearchParams()) {
     state.view = button.dataset.view;
     if (state.view === 'calendar' && !state.selectedDate && today.startsWith(state.month)) {
       state.selectedDate = today;
+    }
+    paintViewToggle();
+    paint();
+  });
+
+  calendarFilters.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-calendar-toggle]');
+    if (!button) return;
+    if (button.dataset.calendarToggle === 'events') {
+      state.showEvents = !state.showEvents;
+    } else {
+      state.includeArchived = !state.includeArchived;
     }
     paintViewToggle();
     paint();
@@ -3976,12 +4243,15 @@ async function renderJournal(params = new URLSearchParams()) {
     state.from = '';
     state.to = '';
     state.tag = '';
+    state.showEvents = true;
+    state.includeArchived = false;
     search.value = '';
     fromInput.value = '';
     toInput.value = '';
     setSelectValue(clientSelect, '');
     setSelectActive(clientSelect, false);
     paintTags();
+    paintViewToggle();
     paint();
   });
 
@@ -3998,6 +4268,13 @@ async function renderJournal(params = new URLSearchParams()) {
       state.month = today.slice(0, 7);
       state.selectedDate = today;
       paint();
+      return;
+    }
+
+    const add = event.target.closest('[data-calendar-add]');
+    if (add) {
+      event.preventDefault();
+      openCalendarMenu(add, add.dataset.calendarAdd);
       return;
     }
 
@@ -4122,7 +4399,15 @@ async function renderJournalForm(id, options = {}) {
   subtitleEl.textContent = isEdit ? formatLongDate(entry.entry_date) : 'Дневник практики';
   document.title = `${titleEl.textContent} · Таро`;
 
-  const backHref = isEdit ? `#/journal/${entry.id}` : '#/journal';
+  const calendarDate = !isEdit && /^\d{4}-\d{2}-\d{2}$/.test(String(options.date ?? ''))
+    ? options.date
+    : '';
+  const calendarHref = calendarDate
+    ? `#/journal?view=calendar&month=${calendarDate.slice(0, 7)}&date=${calendarDate}`
+    : '';
+  const backHref = isEdit
+    ? `#/journal/${entry.id}`
+    : calendarHref || '#/journal';
 
   const clientOptions = clients.map((client) => `
     <option value="${client.id}"${String(entry.client_id ?? '') === String(client.id) ? ' selected' : ''}>
@@ -4162,7 +4447,7 @@ async function renderJournalForm(id, options = {}) {
   `).join('');
 
   viewEl.innerHTML = `
-    <a class="back-link" href="${backHref}">← назад</a>
+    <a class="back-link" href="${backHref}">← ${calendarHref ? 'в календарь' : 'назад'}</a>
 
     <form class="panel form journal-form" id="journal-form" novalidate>
       <div class="form-row">
@@ -4249,7 +4534,11 @@ async function renderJournalForm(id, options = {}) {
       const saved = isEdit
         ? await api(`/api/journal/${id}`, { method: 'PUT', body: JSON.stringify(data) })
         : await api('/api/journal', { method: 'POST', body: JSON.stringify(data) });
-      location.hash = `#/journal/${saved.id}`;
+      if (calendarHref) {
+        location.hash = calendarHref;
+      } else {
+        location.hash = `#/journal/${saved.id}`;
+      }
     } catch (error) {
       errorEl.textContent = error.message;
       submitButton.disabled = false;
@@ -4862,7 +5151,10 @@ function route() {
   } else if (section.id === 'cards') {
     renderCards(params);
   } else if (section.id === 'events' && action === 'new') {
-    renderEventForm(null, { readingId: params.get('reading') });
+    renderEventForm(null, {
+      readingId: params.get('reading'),
+      date: params.get('date'),
+    });
   } else if (section.id === 'events' && action && sub === 'edit') {
     renderEventForm(action);
   } else if (section.id === 'events' && action) {
