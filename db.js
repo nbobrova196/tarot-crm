@@ -316,6 +316,7 @@ export function getStats() {
     clients: count('clients'),
     readings: count('readings'),
     journal: count('journal'),
+    events: count('events'),
   };
 }
 

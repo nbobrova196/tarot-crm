@@ -2661,6 +2661,42 @@ input[type="date"] {
   margin: 22px 0;
 }
 
+.quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0 0 22px;
+}
+
+.outcome-shares {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.outcome-share {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.outcome-share-value {
+  display: block;
+  font-family: var(--font-title);
+  font-size: 24px;
+  line-height: 1.1;
+  color: var(--gold-soft);
+}
+
+.outcome-share-label {
+  display: block;
+  margin-top: 3px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
 .calendar-compact {
   padding: 16px 18px;
 }

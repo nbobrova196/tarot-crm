@@ -51,6 +51,7 @@ const TILES = [
   { key: 'clients', label: 'Клиенты' },
   { key: 'cards', label: 'Карты в базе' },
   { key: 'journal', label: 'Записи дневника' },
+  { key: 'events', label: 'События' },
 ];
 
 const SUITS = {
@@ -626,12 +627,25 @@ async function renderOverview() {
 
     <div id="overview-calendar" class="overview-calendar"><p class="muted">Загрузка…</p></div>
 
+    <div class="quick-actions">
+      <a class="btn btn-primary" href="#/events/new">+ Создать событие</a>
+      <a class="btn" href="#/readings/new">+ Создать расклад</a>
+    </div>
+
     <div class="panel" id="pending-outcomes-panel">
       <div class="panel-head">
         <h2>Ожидают оценки</h2>
         <a class="panel-link" href="#/readings?status=done">завершённые расклады →</a>
       </div>
       <div id="pending-outcomes"><p class="muted">Загрузка…</p></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Последние события</h2>
+        <a class="panel-link" href="#/events">все события →</a>
+      </div>
+      <div class="latest-readings" id="latest-events"><p class="muted">Загрузка…</p></div>
     </div>
 
     <div class="panel">
@@ -725,6 +739,21 @@ async function renderOverview() {
         }).join('');
 
     const events = eventsResponse.ok ? await eventsResponse.json() : [];
+
+    const latestEventsHost = document.getElementById('latest-events');
+    const latestEvents = events.slice(0, 5);
+    latestEventsHost.innerHTML = latestEvents.length === 0
+      ? '<div class="empty">Событий пока нет. <a href="#/events/new">Создать первое</a></div>'
+      : latestEvents.map((event) => `
+          <a class="list-row" href="#/events/${event.id}">
+            <div class="list-main">
+              <div class="list-title">${escapeHtml(event.title)}</div>
+              <div class="list-sub">${[eventDateLabel(event), event.category].filter(Boolean).map(escapeHtml).join(' · ')}</div>
+            </div>
+            <span class="status-badge ${eventStatusClass(event.status)}">${EVENT_STATUS_LABELS[event.status] ?? event.status}</span>
+          </a>
+        `).join('');
+
     const calendarHost = document.getElementById('overview-calendar');
     let overviewMonth = todayIso().slice(0, 7);
 
@@ -4566,6 +4595,7 @@ const SEARCH_SCOPES = [
   { id: 'cards', label: 'Карты' },
   { id: 'clients', label: 'Клиенты' },
   { id: 'readings', label: 'Расклады' },
+  { id: 'events', label: 'События' },
   { id: 'journal', label: 'Дневник' },
 ];
 
@@ -4688,6 +4718,9 @@ function clientSearchRow(client, query, counts = { readings: 0, journal: 0 }) {
 
 function readingSearchRow(reading, query) {
   const statusLabel = READING_STATUS_LABELS[reading.status] ?? reading.status;
+  const outcomeLabel = reading.outcome_rating
+    ? OUTCOME_RATING_LABELS[reading.outcome_rating] ?? reading.outcome_rating
+    : '';
   const haystack = [
     reading.title,
     reading.question,
@@ -4695,6 +4728,9 @@ function readingSearchRow(reading, query) {
     reading.spread_name,
     reading.interpretation,
     reading.summary,
+    reading.outcome_result,
+    reading.outcome_comment,
+    outcomeLabel,
     statusLabel,
     reading.reading_date,
     formatDate(reading.reading_date),
@@ -4704,7 +4740,7 @@ function readingSearchRow(reading, query) {
   const title = reading.title || reading.question || 'Без названия';
   const snippetSources = [];
   if (reading.question && reading.question !== title) snippetSources.push(reading.question);
-  snippetSources.push(reading.interpretation, reading.summary);
+  snippetSources.push(reading.interpretation, reading.summary, reading.outcome_result, reading.outcome_comment);
   const snippet = pickSnippet(snippetSources, query);
 
   const spreadCount = Number((reading.spread_name?.match(/^(\d+)\s+карт/) ?? [])[1]);
@@ -4715,6 +4751,7 @@ function readingSearchRow(reading, query) {
     reading.client_name || 'для себя',
     reading.spread_name,
     spreadCount === reading.cards_count ? '' : cardsLabel,
+    reading.outcome_result ? journalExcerpt(reading.outcome_result, 80) : '',
   ].filter(Boolean).join(' · ');
 
   return `
@@ -4725,7 +4762,53 @@ function readingSearchRow(reading, query) {
         ${snippet ? `<div class="search-snippet">${escapeHtml(snippet)}</div>` : ''}
         <div class="search-row-meta">${escapeHtml(meta)}</div>
       </div>
-      <span class="status-badge status-${reading.status}">${READING_STATUS_LABELS[reading.status] ?? reading.status}</span>
+      <span class="row-badges">
+        <span class="status-badge status-${reading.status}">${statusLabel}</span>
+        ${reading.outcome_rating
+          ? `<span class="outcome-badge ${outcomeRatingClass(reading.outcome_rating)}">${escapeHtml(outcomeLabel)}</span>`
+          : ''}
+      </span>
+    </a>
+  `;
+}
+
+function eventSearchRow(event, query) {
+  const statusLabel = EVENT_STATUS_LABELS[event.status] ?? event.status;
+  const haystack = [
+    event.title,
+    event.description,
+    event.category,
+    event.result,
+    event.notes,
+    event.reading_titles,
+    event.client_names,
+    statusLabel,
+    event.planned_date,
+    event.actual_date,
+    event.planned_date ? formatDate(event.planned_date) : '',
+    event.actual_date ? formatDate(event.actual_date) : '',
+  ];
+  if (!matchesSearch(haystack, query)) return null;
+
+  const snippet = pickSnippet([event.result, event.description, event.notes], query)
+    || journalExcerpt(event.description ?? event.result ?? '', 150);
+  const meta = [
+    eventDateLabel(event),
+    event.category,
+    event.readings_count ? eventReadingsLabel(event.readings_count) : '',
+    event.client_names,
+  ].filter(Boolean).join(' · ');
+  const date = event.actual_date || event.planned_date;
+
+  return `
+    <a class="search-row" href="#/events/${event.id}">
+      <span class="search-date">${date ? formatDate(date) : '—'}</span>
+      <div class="search-row-main">
+        <div class="search-row-title">${escapeHtml(event.title)}</div>
+        ${snippet ? `<div class="search-snippet">${escapeHtml(snippet)}</div>` : ''}
+        <div class="search-row-meta">${escapeHtml(meta)}</div>
+      </div>
+      <span class="status-badge ${eventStatusClass(event.status)}">${statusLabel}</span>
     </a>
   `;
 }
@@ -4790,7 +4873,7 @@ async function renderSearch(params = new URLSearchParams()) {
     ${searchTabs('search')}
     <div class="panel search-box">
       <input class="search search-global" id="global-search" type="search" autocomplete="off"
-             placeholder="Карта, клиент, вопрос, текст трактовки, запись или тег"
+             placeholder="Карта, клиент, вопрос, событие, итог, запись или тег"
              value="${escapeHtml(initialQuery)}">
       <div class="search-box-foot">
         <div class="chips" id="search-scope">
@@ -4800,7 +4883,7 @@ async function renderSearch(params = new URLSearchParams()) {
             </button>
           `).join('')}
         </div>
-        <span class="hint">Ищет по названиям, заметкам, трактовкам, тегам и привязкам</span>
+        <span class="hint">Ищет по названиям, заметкам, трактовкам, событиям, итогам, тегам и привязкам</span>
         <button class="btn btn-small reset-filters" type="button" id="search-reset" hidden>Сбросить фильтры</button>
       </div>
     </div>
@@ -4814,13 +4897,14 @@ async function renderSearch(params = new URLSearchParams()) {
 
   let data;
   try {
-    const [cards, clients, readings, journal] = await Promise.all([
+    const [cards, clients, readings, journal, events] = await Promise.all([
       getCards(),
       api('/api/clients'),
       api('/api/readings'),
       api('/api/journal'),
+      api('/api/events'),
     ]);
-    data = { cards, clients, readings, journal };
+    data = { cards, clients, readings, journal, events };
   } catch (error) {
     output.innerHTML = `<div class="panel"><p>${escapeHtml(error.message)}</p></div>`;
     return;
@@ -4864,13 +4948,14 @@ async function renderSearch(params = new URLSearchParams()) {
         { id: 'cards', label: 'Карты', count: data.cards.length, noun: ['карта', 'карты', 'карт'] },
         { id: 'clients', label: 'Клиенты', count: data.clients.length, noun: ['клиент', 'клиента', 'клиентов'] },
         { id: 'readings', label: 'Расклады', count: data.readings.length, noun: ['расклад', 'расклада', 'раскладов'] },
+        { id: 'events', label: 'События', count: data.events.length, noun: ['событие', 'события', 'событий'] },
         { id: 'journal', label: 'Дневник', count: data.journal.length, noun: ['запись', 'записи', 'записей'] },
       ];
 
       output.innerHTML = `
         <div class="panel search-intro">
           <h2>Что можно найти</h2>
-          <p class="muted">Названия и значения карт, имена и заметки клиентов, вопросы и трактовки раскладов, записи дневника и теги.</p>
+          <p class="muted">Названия и значения карт, имена и заметки клиентов, вопросы и трактовки раскладов, события и их результаты, итоговые оценки, записи дневника и теги.</p>
           <div class="search-scope-cards">
             ${scopeCards.map((item) => `
               <button type="button" class="scope-card" data-scope="${item.id}">
@@ -4879,7 +4964,7 @@ async function renderSearch(params = new URLSearchParams()) {
               </button>
             `).join('')}
           </div>
-          <p class="hint">Например: «деньги», «Надежда», «карта дня».</p>
+          <p class="hint">Например: «деньги», «Надежда», «собеседование», «совпало».</p>
         </div>
       `;
       return;
@@ -4894,11 +4979,14 @@ async function renderSearch(params = new URLSearchParams()) {
     const readings = state.scope === 'all' || state.scope === 'readings'
       ? data.readings.map((reading) => readingSearchRow(reading, normalized)).filter(Boolean)
       : [];
+    const events = state.scope === 'all' || state.scope === 'events'
+      ? data.events.map((event) => eventSearchRow(event, normalized)).filter(Boolean)
+      : [];
     const journal = state.scope === 'all' || state.scope === 'journal'
       ? data.journal.map((entry) => journalSearchRow(entry, normalized)).filter(Boolean)
       : [];
 
-    const total = cards.length + clients.length + readings.length + journal.length;
+    const total = cards.length + clients.length + readings.length + events.length + journal.length;
 
     if (total === 0) {
       output.innerHTML = `
@@ -4917,6 +5005,7 @@ async function renderSearch(params = new URLSearchParams()) {
       ${searchGroup('Карты', cards, ['карта', 'карты', 'карт'])}
       ${searchGroup('Клиенты', clients, ['клиент', 'клиента', 'клиентов'])}
       ${searchGroup('Расклады', readings, ['расклад', 'расклада', 'раскладов'])}
+      ${searchGroup('События', events, ['событие', 'события', 'событий'])}
       ${searchGroup('Дневник', journal, ['запись', 'записи', 'записей'])}
     `;
   }
@@ -5041,6 +5130,56 @@ async function renderStatistics() {
 
   const unusedCards = totals.cards - stats.cards.length;
 
+  const outcomeStats = stats.outcomes ?? {
+    totalOutcomes: 0,
+    sampleSize: 0,
+    totalReadings: totals.readings,
+    doneReadings: totals.done,
+    doneWithOutcome: 0,
+    distribution: [],
+  };
+  const eventStats = stats.events ?? {
+    total: totals.events ?? 0,
+    withResult: 0,
+    byStatus: {},
+    byCategory: [],
+  };
+
+  const percent = (part, whole) => (whole > 0 ? Math.round((part / whole) * 100) : 0);
+  const outcomeShare = percent(outcomeStats.sampleSize, outcomeStats.totalReadings);
+  const doneOutcomeShare = percent(outcomeStats.doneWithOutcome, outcomeStats.doneReadings);
+  const maxOutcome = Math.max(1, ...outcomeStats.distribution.map((item) => item.count));
+  const outcomeRows = outcomeStats.distribution
+    .filter((item) => item.count > 0)
+    .map((item) => {
+      const width = Math.max(4, Math.round((item.count / maxOutcome) * 100));
+      return `
+        <div class="theme-stat">
+          <span class="outcome-badge ${outcomeRatingClass(item.rating)}">${OUTCOME_RATING_LABELS[item.rating] ?? item.rating}</span>
+          <span class="theme-bar"><span style="width:${width}%"></span></span>
+          <span class="theme-count">${item.count}</span>
+        </div>
+      `;
+    }).join('');
+
+  const maxCategory = Math.max(1, ...eventStats.byCategory.map((item) => item.count));
+  const categoryRows = eventStats.byCategory.map((item) => {
+    const width = Math.max(4, Math.round((item.count / maxCategory) * 100));
+    return `
+      <div class="theme-stat">
+        <span class="theme">${escapeHtml(item.category)}</span>
+        <span class="theme-bar"><span style="width:${width}%"></span></span>
+        <span class="theme-count">${item.count}</span>
+      </div>
+    `;
+  }).join('');
+
+  const eventStatusBadges = EVENT_STATUS_FILTERS
+    .filter((status) => status.id !== 'all')
+    .map((status) => `
+      <span class="status-badge ${eventStatusClass(status.id)}">${EVENT_STATUS_LABELS[status.id]} · ${eventStats.byStatus[status.id] ?? 0}</span>
+    `).join('');
+
   viewEl.innerHTML = `
     ${searchTabs('stats')}
 
@@ -5049,6 +5188,7 @@ async function renderStatistics() {
       ${statCard(totals.clients, 'Клиентов')}
       ${statCard(totals.readings, 'Раскладов')}
       ${statCard(totals.journal, 'Записей дневника')}
+      ${statCard(eventStats.total, 'Событий')}
     </div>
 
     <div class="panel">
@@ -5062,6 +5202,54 @@ async function renderStatistics() {
         <span class="status-badge status-archived">архив · ${totals.archived}</span>
       </div>
       <p class="hint">Расклады для себя: ${totals.selfReadings}.</p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Итоги и оценки</h2>
+        <span class="muted">${outcomeStats.totalOutcomes} ${plural(outcomeStats.totalOutcomes, ['оценка', 'оценки', 'оценок'])}</span>
+      </div>
+      <div class="outcome-shares">
+        <div class="outcome-share">
+          <span class="outcome-share-value">${outcomeShare}%</span>
+          <span class="outcome-share-label">раскладов с итогом</span>
+        </div>
+        <div class="outcome-share">
+          <span class="outcome-share-value">${doneOutcomeShare}%</span>
+          <span class="outcome-share-label">завершённых с оценкой</span>
+        </div>
+        <div class="outcome-share">
+          <span class="outcome-share-value">${outcomeStats.sampleSize}</span>
+          <span class="outcome-share-label">в выборке</span>
+        </div>
+      </div>
+      ${outcomeRows
+        ? `<div class="theme-stats">${outcomeRows}</div>`
+        : '<div class="empty">Пока нет итоговых оценок.<br>Оцените завершённый расклад в его карточке.</div>'}
+      <p class="hint">Оценка есть у ${outcomeStats.doneWithOutcome} из ${outcomeStats.doneReadings} завершённых раскладов. Считается последняя оценка каждого расклада.</p>
+    </div>
+
+    <div class="stats-columns">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>События по статусам</h2>
+          <a class="panel-link" href="#/events">все события →</a>
+        </div>
+        ${eventStats.total
+          ? `<div class="status-summary">${eventStatusBadges}</div>
+             <p class="hint">С фактическим результатом: ${eventStats.withResult} из ${eventStats.total}.</p>`
+          : '<div class="empty">Событий пока нет. <a href="#/events/new">Создать первое</a></div>'}
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>События по категориям</h2>
+          <span class="muted">${eventStats.byCategory.length}</span>
+        </div>
+        ${categoryRows
+          ? `<div class="theme-stats">${categoryRows}</div>`
+          : '<div class="empty">Пока нет событий с категориями.</div>'}
+      </div>
     </div>
 
     <div class="stats-columns">

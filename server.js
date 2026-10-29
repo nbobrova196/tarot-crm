@@ -834,12 +834,84 @@ function getStatistics() {
 
   const selfReadings = db.prepare('SELECT COUNT(*) AS n FROM readings WHERE client_id IS NULL').get().n;
 
+  const latestOutcomes = db.prepare(`
+    SELECT o.rating
+    FROM outcome_reviews o
+    WHERE o.id = (
+      SELECT o2.id
+      FROM outcome_reviews o2
+      WHERE o2.reading_id = o.reading_id
+      ORDER BY o2.reviewed_at DESC, o2.id DESC
+      LIMIT 1
+    )
+  `).all();
+
+  const outcomeCounts = { matched: 0, partial: 0, not_matched: 0, insufficient: 0, pending: 0 };
+  for (const row of latestOutcomes) {
+    outcomeCounts[row.rating] = (outcomeCounts[row.rating] ?? 0) + 1;
+  }
+
+  const outcomeDistribution = ['matched', 'partial', 'not_matched', 'insufficient', 'pending']
+    .map((rating) => ({ rating, count: outcomeCounts[rating] ?? 0 }));
+
+  const totalReadings = statusCounts.draft + statusCounts.done + statusCounts.archived;
+  const totalOutcomes = db.prepare('SELECT COUNT(*) AS n FROM outcome_reviews').get().n;
+  const doneWithOutcome = db.prepare(`
+    SELECT COUNT(DISTINCT o.reading_id) AS n
+    FROM outcome_reviews o
+    JOIN readings r ON r.id = o.reading_id
+    WHERE r.status = 'done'
+  `).get().n;
+
+  const eventStatusRows = db.prepare('SELECT status, COUNT(*) AS n FROM events GROUP BY status').all();
+  const eventStatusCounts = {
+    planned: 0,
+    in_progress: 0,
+    done: 0,
+    cancelled: 0,
+    archived: 0,
+  };
+  let totalEvents = 0;
+  for (const row of eventStatusRows) {
+    eventStatusCounts[row.status] = row.n;
+    totalEvents += row.n;
+  }
+
+  const eventCategories = db.prepare(`
+    SELECT
+      COALESCE(NULLIF(TRIM(category), ''), 'без категории') AS category,
+      COUNT(*) AS count
+    FROM events
+    GROUP BY COALESCE(NULLIF(TRIM(category), ''), 'без категории')
+    ORDER BY count DESC, category
+  `).all();
+
+  const eventsWithResult = db.prepare(`
+    SELECT COUNT(*) AS n
+    FROM events
+    WHERE result IS NOT NULL AND TRIM(result) <> ''
+  `).get().n;
+
   return {
-    totals: { ...getStats(), ...statusCounts, selfReadings },
+    totals: { ...getStats(), ...statusCounts, selfReadings, events: totalEvents },
     cards,
     clients,
     themes,
     journalTags,
+    outcomes: {
+      totalOutcomes,
+      sampleSize: latestOutcomes.length,
+      totalReadings,
+      doneReadings: statusCounts.done,
+      doneWithOutcome,
+      distribution: outcomeDistribution,
+    },
+    events: {
+      total: totalEvents,
+      withResult: eventsWithResult,
+      byStatus: eventStatusCounts,
+      byCategory: eventCategories,
+    },
   };
 }
 
@@ -1075,7 +1147,19 @@ const routes = [
       SELECT
         r.*,
         c.name AS client_name,
-        (SELECT COUNT(*) FROM reading_cards rc WHERE rc.reading_id = r.id) AS cards_count
+        (SELECT COUNT(*) FROM reading_cards rc WHERE rc.reading_id = r.id) AS cards_count,
+        (SELECT o.rating FROM outcome_reviews o
+          WHERE o.reading_id = r.id
+          ORDER BY o.reviewed_at DESC, o.id DESC LIMIT 1) AS outcome_rating,
+        (SELECT o.result FROM outcome_reviews o
+          WHERE o.reading_id = r.id
+          ORDER BY o.reviewed_at DESC, o.id DESC LIMIT 1) AS outcome_result,
+        (SELECT o.comment FROM outcome_reviews o
+          WHERE o.reading_id = r.id
+          ORDER BY o.reviewed_at DESC, o.id DESC LIMIT 1) AS outcome_comment,
+        (SELECT o.reviewed_at FROM outcome_reviews o
+          WHERE o.reading_id = r.id
+          ORDER BY o.reviewed_at DESC, o.id DESC LIMIT 1) AS outcome_reviewed_at
       FROM readings r
       LEFT JOIN clients c ON c.id = r.client_id
       ${where}
