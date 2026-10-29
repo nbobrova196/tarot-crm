@@ -19,7 +19,7 @@ db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
 db.exec('PRAGMA busy_timeout = 5000');
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 const schemaV1 = `
 CREATE TABLE IF NOT EXISTS cards (
@@ -233,6 +233,67 @@ if (currentVersion < 5) {
   db.exec('BEGIN');
   try {
     db.exec(schemaV5);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+// Версия 6: итоги раскладов и история трактовок.
+// Итог можно записывать несколько раз: каждая запись — новая версия оценки,
+// последняя считается актуальной. Первоначальная трактовка сохраняется
+// отдельным снимком и больше не перезаписывается.
+const schemaV6 = `
+CREATE TABLE IF NOT EXISTS outcome_reviews (
+  id                      INTEGER PRIMARY KEY,
+  reading_id              INTEGER NOT NULL REFERENCES readings(id) ON DELETE CASCADE,
+  event_id                INTEGER REFERENCES events(id) ON DELETE SET NULL,
+  result                  TEXT,
+  rating                  TEXT NOT NULL DEFAULT 'pending'
+                          CHECK (rating IN ('matched', 'partial', 'not_matched', 'insufficient', 'pending')),
+  comment                 TEXT,
+  reviewed_at             TEXT NOT NULL DEFAULT (date('now')),
+  follow_up_date          TEXT,
+  followup_interpretation TEXT,
+  confidence              TEXT CHECK (confidence IS NULL OR confidence IN ('low', 'medium', 'high')),
+  created_at              TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS reading_versions (
+  id             INTEGER PRIMARY KEY,
+  reading_id     INTEGER NOT NULL REFERENCES readings(id) ON DELETE CASCADE,
+  kind           TEXT NOT NULL CHECK (kind IN ('initial', 'update', 'final')),
+  interpretation TEXT,
+  summary        TEXT,
+  comment        TEXT,
+  created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_outcomes_reading ON outcome_reviews(reading_id, reviewed_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_outcomes_event   ON outcome_reviews(event_id);
+CREATE INDEX IF NOT EXISTS idx_versions_reading ON reading_versions(reading_id, id);
+`;
+
+if (currentVersion < 6) {
+  db.exec('BEGIN');
+  try {
+    db.exec(schemaV6);
+
+    // Для уже завершённых раскладов сохраняем текущий текст как первоначальный
+    // снимок: иначе история начнётся только со следующей правки.
+    db.exec(`
+      INSERT INTO reading_versions (reading_id, kind, interpretation, summary, comment)
+      SELECT r.id, 'initial', r.interpretation, r.summary, 'Снимок при обновлении приложения'
+      FROM readings r
+      WHERE r.status = 'done'
+        AND (r.interpretation IS NOT NULL OR r.summary IS NOT NULL)
+        AND NOT EXISTS (
+          SELECT 1 FROM reading_versions v
+          WHERE v.reading_id = r.id AND v.kind = 'initial'
+        )
+    `);
+
     db.exec('COMMIT');
   } catch (error) {
     db.exec('ROLLBACK');

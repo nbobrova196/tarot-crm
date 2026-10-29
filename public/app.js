@@ -107,6 +107,40 @@ const EVENT_STATUS_FORM_LABELS = {
   archived: 'Архив',
 };
 
+const OUTCOME_RATING_LABELS = {
+  matched: 'совпало',
+  partial: 'частично',
+  not_matched: 'не совпало',
+  insufficient: 'недостаточно информации',
+  pending: 'пока нельзя оценить',
+};
+
+const OUTCOME_RATING_FORM_LABELS = {
+  matched: 'Совпало',
+  partial: 'Частично совпало',
+  not_matched: 'Не совпало',
+  insufficient: 'Недостаточно информации',
+  pending: 'Пока нельзя оценить',
+};
+
+const OUTCOME_RATING_ORDER = ['matched', 'partial', 'not_matched', 'insufficient', 'pending'];
+
+const OUTCOME_CONFIDENCE_LABELS = {
+  low: 'низкая',
+  medium: 'средняя',
+  high: 'высокая',
+};
+
+const VERSION_KIND_LABELS = {
+  initial: 'первоначальная',
+  update: 'после правки',
+  final: 'итоговая',
+};
+
+function outcomeRatingClass(rating) {
+  return `rating-${String(rating ?? 'pending').replace(/_/g, '-')}`;
+}
+
 function eventStatusClass(status) {
   return `status-${String(status ?? '').replace(/_/g, '-')}`;
 }
@@ -220,6 +254,23 @@ function formatDate(value) {
 function todayIso() {
   const now = new Date();
   return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+
+function formatDateTime(value) {
+  if (!value) return '';
+  const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+  if (!match) return formatDate(value);
+
+  const date = new Date(Date.UTC(
+    Number(match[1]),
+    Number(match[2]) - 1,
+    Number(match[3]),
+    Number(match[4]),
+    Number(match[5]),
+  ));
+  const pad = (number) => String(number).padStart(2, '0');
+  return `${pad(date.getDate())}.${pad(date.getMonth() + 1)}.${date.getFullYear()} `
+    + `${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 /* ---------- Выпадающие списки ---------- */
@@ -573,6 +624,14 @@ async function renderOverview() {
   viewEl.innerHTML = `
     <div class="stats">${TILES.map(statTile).join('')}</div>
 
+    <div class="panel" id="pending-outcomes-panel">
+      <div class="panel-head">
+        <h2>Ожидают оценки</h2>
+        <a class="panel-link" href="#/readings?status=done">завершённые расклады →</a>
+      </div>
+      <div id="pending-outcomes"><p class="muted">Загрузка…</p></div>
+    </div>
+
     <div class="panel">
       <div class="panel-head">
         <h2>Последние расклады</h2>
@@ -591,10 +650,11 @@ async function renderOverview() {
   `;
 
   try {
-    const [statsResponse, readingsResponse, journalResponse] = await Promise.all([
+    const [statsResponse, readingsResponse, journalResponse, pendingResponse] = await Promise.all([
       fetch('/api/stats'),
       fetch('/api/readings'),
       fetch('/api/journal'),
+      fetch('/api/outcomes/pending'),
     ]);
     if (!statsResponse.ok) throw new Error(`HTTP ${statsResponse.status}`);
 
@@ -634,6 +694,32 @@ async function renderOverview() {
             </div>
           </a>
         `).join('');
+
+    const pendingHost = document.getElementById('pending-outcomes');
+    const pending = pendingResponse.ok ? await pendingResponse.json() : [];
+
+    pendingHost.innerHTML = pending.length === 0
+      ? '<div class="empty">Все завершённые расклады оценены. Так держать.</div>'
+      : pending.map((reading) => {
+          const reason = reading.reason === 'follow_up'
+            ? `вернуться ${formatDate(reading.follow_up_date)}`
+            : 'итог не записан';
+
+          return `
+            <a class="list-row pending-outcome-row" href="#/readings/${reading.id}">
+              <div class="list-main">
+                <div class="list-title">${escapeHtml(reading.title || reading.question || 'Расклад')}</div>
+                <div class="list-sub">${formatDate(reading.reading_date)} · ${escapeHtml(reading.client_name || 'для себя')}${reading.event_titles ? ` · ${escapeHtml(reading.event_titles)}` : ''}</div>
+              </div>
+              <span class="outcome-badge ${reading.latest_rating ? outcomeRatingClass(reading.latest_rating) : 'rating-pending'}">
+                ${reading.latest_rating
+                  ? OUTCOME_RATING_LABELS[reading.latest_rating] ?? reading.latest_rating
+                  : 'нет оценки'}
+              </span>
+              <span class="muted pending-reason">${escapeHtml(reason)}</span>
+            </a>
+          `;
+        }).join('');
   } catch (error) {
     console.error('Не удалось загрузить статистику:', error);
   }
@@ -2352,6 +2438,111 @@ function exportReadingPdf(reading) {
   printWindow.focus();
 }
 
+function outcomeMetaLine(outcome) {
+  return [
+    outcome.reviewed_at ? formatDate(outcome.reviewed_at) : null,
+    outcome.event_id && outcome.event_title
+      ? `<a href="#/events/${outcome.event_id}">${escapeHtml(outcome.event_title)}</a>`
+      : null,
+    outcome.confidence
+      ? `уверенность: ${OUTCOME_CONFIDENCE_LABELS[outcome.confidence] ?? outcome.confidence}`
+      : null,
+  ].filter(Boolean).join(' · ');
+}
+
+function outcomeCurrentMarkup(outcome) {
+  if (!outcome) {
+    return '<div class="empty">Итог пока не записан. Когда станет понятно, чем всё закончилось, добавьте его здесь.</div>';
+  }
+
+  return `
+    <div class="outcome-current">
+      <div class="outcome-head">
+        <span class="outcome-badge ${outcomeRatingClass(outcome.rating)}">${OUTCOME_RATING_LABELS[outcome.rating] ?? outcome.rating}</span>
+        <span class="muted outcome-meta">${outcomeMetaLine(outcome)}</span>
+      </div>
+      ${outcome.result
+        ? `<div class="event-block"><h3>Что произошло</h3><div class="notes event-notes">${escapeHtml(outcome.result)}</div></div>`
+        : ''}
+      ${outcome.comment
+        ? `<div class="event-block"><h3>Комментарий</h3><div class="notes event-notes">${escapeHtml(outcome.comment)}</div></div>`
+        : ''}
+      ${outcome.followup_interpretation
+        ? `<div class="event-block"><h3>Трактовка после события</h3><div class="notes event-notes">${escapeHtml(outcome.followup_interpretation)}</div></div>`
+        : ''}
+      ${outcome.follow_up_date
+        ? `<p class="outcome-followup">Вернуться к раскладу: <strong>${formatDate(outcome.follow_up_date)}</strong></p>`
+        : ''}
+    </div>
+  `;
+}
+
+function outcomePanelMarkup(reading) {
+  const outcomes = reading.outcomes ?? [];
+  const latest = outcomes[0] ?? null;
+  const earlier = outcomes.slice(1);
+
+  return `
+    <div class="panel" id="reading-outcome-panel">
+      <div class="panel-head">
+        <h2>Итог</h2>
+        <button class="btn btn-small" type="button" id="outcome-edit">
+          ${latest ? 'Изменить' : 'Добавить итог'}
+        </button>
+      </div>
+      <div id="outcome-body">${outcomeCurrentMarkup(latest)}</div>
+      ${earlier.length > 0
+        ? `<details class="outcome-history">
+             <summary>Предыдущие оценки (${earlier.length})</summary>
+             ${earlier.map((outcome) => `
+               <div class="outcome-history-item">
+                 <div class="outcome-head">
+                   <span class="outcome-badge ${outcomeRatingClass(outcome.rating)}">${OUTCOME_RATING_LABELS[outcome.rating] ?? outcome.rating}</span>
+                   <span class="muted outcome-meta">${outcomeMetaLine(outcome)}</span>
+                 </div>
+                 ${outcome.result ? `<div class="interp-body">${escapeHtml(outcome.result)}</div>` : ''}
+                 ${outcome.comment ? `<div class="muted outcome-comment">${escapeHtml(outcome.comment)}</div>` : ''}
+               </div>
+             `).join('')}
+           </details>`
+        : ''}
+    </div>
+  `;
+}
+
+function versionsPanelMarkup(reading) {
+  const versions = reading.versions ?? [];
+  if (versions.length === 0) return '';
+
+  const lastId = versions[versions.length - 1].id;
+
+  return `
+    <div class="panel" id="reading-versions-panel">
+      <h2>История трактовок</h2>
+      <p class="muted reading-originals-note">Что вы думали до события и как трактовка менялась.</p>
+      <div class="version-list">
+        ${versions.map((version) => `
+          <details class="version-item"${version.id === lastId ? ' open' : ''}>
+            <summary>
+              <span class="version-kind">${VERSION_KIND_LABELS[version.kind] ?? version.kind}</span>
+              <span class="muted">${formatDateTime(version.created_at)}</span>
+            </summary>
+            ${version.interpretation
+              ? `<div class="event-block"><h3>Трактовка</h3><div class="notes event-notes">${escapeHtml(version.interpretation)}</div></div>`
+              : ''}
+            ${version.summary
+              ? `<div class="event-block"><h3>Выводы</h3><div class="notes event-notes">${escapeHtml(version.summary)}</div></div>`
+              : ''}
+            ${version.comment
+              ? `<p class="muted version-comment">${escapeHtml(version.comment)}</p>`
+              : ''}
+          </details>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
 async function renderReadingView(id) {
   viewEl.innerHTML = '<p class="muted">Загрузка расклада…</p>';
 
@@ -2585,6 +2776,10 @@ async function renderReadingView(id) {
 
     ${editablePanel('summary', 'Выводы', 'Пока не заполнены.')}
 
+    ${outcomePanelMarkup(reading)}
+
+    ${versionsPanelMarkup(reading)}
+
     ${eventsPanelHtml}
 
     ${journalHtml}
@@ -2661,6 +2856,139 @@ async function renderReadingView(id) {
     'Короткий итог, совет, к чему пришли',
     'Пока не заполнены.',
   );
+
+  function outcomeFormMarkup(outcome) {
+    const eventSelect = linkedEvents.length > 0
+      ? `
+        <label>Событие
+          <select name="event_id">
+            <option value="">Без события</option>
+            ${linkedEvents.map((event) => `
+              <option value="${event.id}"${outcome?.event_id === event.id ? ' selected' : ''}>
+                ${escapeHtml(event.title)}
+              </option>
+            `).join('')}
+          </select>
+        </label>
+      `
+      : '<p class="field-hint muted">С раскладом не связано ни одно событие — итог можно сохранить и без него.</p>';
+
+    return `
+      <form class="form inline-edit outcome-form" id="outcome-form" novalidate>
+        ${eventSelect}
+
+        <div class="form-row">
+          <label><span>Оценка<span class="req">*</span></span>
+            <select name="rating">
+              ${OUTCOME_RATING_ORDER.map((rating) => `
+                <option value="${rating}"${(outcome?.rating ?? 'pending') === rating ? ' selected' : ''}>
+                  ${OUTCOME_RATING_FORM_LABELS[rating]}
+                </option>
+              `).join('')}
+            </select>
+          </label>
+          <label>Уверенность
+            <select name="confidence">
+              <option value="">Не указана</option>
+              ${Object.entries(OUTCOME_CONFIDENCE_LABELS).map(([value, label]) => `
+                <option value="${value}"${outcome?.confidence === value ? ' selected' : ''}>${label}</option>
+              `).join('')}
+            </select>
+          </label>
+        </div>
+
+        <div class="form-row">
+          <label>Дата оценки
+            <input type="date" name="reviewed_at" value="${outcome?.reviewed_at ?? todayIso()}">
+          </label>
+          <label>Вернуться к раскладу
+            <input type="date" name="follow_up_date" value="${outcome?.follow_up_date ?? ''}">
+          </label>
+        </div>
+
+        <label>Что произошло
+          <textarea name="result" rows="4" maxlength="5000"
+                    placeholder="Фактический результат: что случилось на самом деле">${escapeHtml(outcome?.result ?? '')}</textarea>
+        </label>
+
+        <label>Комментарий
+          <textarea name="comment" rows="3" maxlength="5000"
+                    placeholder="Насколько трактовка попала в точку и почему">${escapeHtml(outcome?.comment ?? '')}</textarea>
+        </label>
+
+        <label>Трактовка после события
+          <textarea name="followup_interpretation" rows="4" maxlength="5000"
+                    placeholder="Что стало понятно теперь, с высоты прошедшего времени">${escapeHtml(outcome?.followup_interpretation ?? '')}</textarea>
+        </label>
+
+        <p class="form-error"></p>
+        <div class="form-actions">
+          <button class="btn btn-primary" type="submit">Сохранить итог</button>
+          <button class="btn" type="button" data-cancel>Отмена</button>
+        </div>
+      </form>
+    `;
+  }
+
+  function bindOutcomePanel() {
+    const panel = document.getElementById('reading-outcome-panel');
+    if (!panel) return;
+
+    const button = panel.querySelector('#outcome-edit');
+    const body = panel.querySelector('#outcome-body');
+    if (!button || !body) return;
+
+    function paintCurrent() {
+      body.innerHTML = outcomeCurrentMarkup((reading.outcomes ?? [])[0] ?? null);
+      button.hidden = false;
+    }
+
+    button.addEventListener('click', () => {
+      const latest = (reading.outcomes ?? [])[0] ?? null;
+      button.hidden = true;
+      body.innerHTML = outcomeFormMarkup(latest);
+      enhanceSelects(body);
+
+      const form = body.querySelector('form');
+      const errorEl = form.querySelector('.form-error');
+      const submit = form.querySelector('button[type="submit"]');
+      form.elements.result.focus();
+
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        errorEl.textContent = '';
+        submit.disabled = true;
+
+        try {
+          const saved = await api(`/api/readings/${reading.id}/outcomes`, {
+            method: 'POST',
+            body: JSON.stringify(Object.fromEntries(new FormData(form).entries())),
+          });
+          reading = saved;
+
+          document.getElementById('reading-outcome-panel').outerHTML = outcomePanelMarkup(reading);
+
+          const versionsHost = document.getElementById('reading-versions-panel');
+          const versionsHtml = versionsPanelMarkup(reading);
+          if (versionsHost) {
+            versionsHost.outerHTML = versionsHtml;
+          } else if (versionsHtml) {
+            document.getElementById('reading-outcome-panel')
+              ?.insertAdjacentHTML('afterend', versionsHtml);
+          }
+
+          bindOutcomePanel();
+        } catch (error) {
+          errorEl.textContent = error.message;
+          submit.disabled = false;
+        }
+      });
+
+      form.querySelector('[data-cancel]').addEventListener('click', paintCurrent);
+    });
+  }
+
+  bindOutcomePanel();
 
   const addEventSelect = document.getElementById('reading-event-add');
   const addEventButton = document.getElementById('reading-event-add-btn');
@@ -2916,9 +3244,14 @@ async function renderEventView(id) {
             <div class="reading-date">${formatDate(reading.reading_date)}</div>
             <div class="list-main">
               <div class="list-title">${escapeHtml(reading.title || reading.question || 'Расклад')}</div>
-              <div class="list-sub">${escapeHtml(reading.client_name || 'для себя')}${reading.spread_name ? ` · ${escapeHtml(reading.spread_name)}` : ''}</div>
+              <div class="list-sub">${escapeHtml(reading.client_name || 'для себя')}${reading.spread_name ? ` · ${escapeHtml(reading.spread_name)}` : ''}${reading.outcome_result ? ` · ${escapeHtml(journalExcerpt(reading.outcome_result, 70))}` : ''}</div>
             </div>
-            <span class="status-badge status-${reading.status}">${READING_STATUS_LABELS[reading.status] ?? reading.status}</span>
+            <span class="row-badges">
+              <span class="status-badge status-${reading.status}">${READING_STATUS_LABELS[reading.status] ?? reading.status}</span>
+              ${reading.outcome_rating
+                ? `<span class="outcome-badge ${outcomeRatingClass(reading.outcome_rating)}">${OUTCOME_RATING_LABELS[reading.outcome_rating] ?? reading.outcome_rating}</span>`
+                : ''}
+            </span>
           </a>
           <button class="icon-btn danger" type="button" data-unlink-reading="${reading.id}"
                   data-event-id="${event.id}"
@@ -2928,6 +3261,28 @@ async function renderEventView(id) {
     : `<div class="empty">С этим событием пока не связан ни один расклад.
          <a href="#/readings/new?event=${event.id}">Создать расклад по событию</a>
        </div>`;
+
+  const linkedReadings = event.readings ?? [];
+  const ratedReadings = linkedReadings.filter((reading) => reading.outcome_rating);
+  const ratingCounts = OUTCOME_RATING_ORDER
+    .map((rating) => ({
+      rating,
+      count: ratedReadings.filter((reading) => reading.outcome_rating === rating).length,
+    }))
+    .filter((item) => item.count > 0);
+
+  const outcomeSummaryHtml = linkedReadings.length > 0
+    ? `
+      <div class="outcome-summary">
+        ${ratedReadings.length > 0
+          ? `<span class="outcome-summary-count">Оценено ${ratedReadings.length} из ${linkedReadings.length}</span>
+             ${ratingCounts.map((item) => `
+               <span class="outcome-badge ${outcomeRatingClass(item.rating)}">${OUTCOME_RATING_LABELS[item.rating]}: ${item.count}</span>
+             `).join('')}`
+          : '<span class="muted">Итоги по связанным раскладам пока не записаны.</span>'}
+      </div>
+    `
+    : '';
 
   const addReadingHtml = readings.length === 0
     ? `<p class="muted event-link-hint">Раскладов пока нет.
@@ -2988,6 +3343,7 @@ async function renderEventView(id) {
         <h2>Связанные расклады</h2>
         <a class="panel-link" href="#/readings/new?event=${event.id}">создать расклад →</a>
       </div>
+      ${outcomeSummaryHtml}
       ${linkedHtml}
       ${addReadingHtml}
     </div>

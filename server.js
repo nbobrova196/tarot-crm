@@ -176,6 +176,10 @@ const EVENT_TITLE_MAX = 200;
 const EVENT_CATEGORY_MAX = 100;
 const EVENT_TEXT_MAX = 5000;
 
+const OUTCOME_RATINGS = ['matched', 'partial', 'not_matched', 'insufficient', 'pending'];
+const OUTCOME_TEXT_MAX = 5000;
+const OUTCOME_CONFIDENCES = ['low', 'medium', 'high'];
+
 function normalizeInterpretation(input) {
   const orientation = String(input?.orientation ?? 'upright').trim() || 'upright';
   if (!CARD_ORIENTATIONS.includes(orientation)) {
@@ -373,7 +377,29 @@ function getReadingDetail(id) {
     ORDER BY COALESCE(e.actual_date, e.planned_date) DESC, e.id DESC
   `).all(id);
 
-  return { ...reading, cards, events };
+  const outcomes = db.prepare(`
+    SELECT o.*, e.title AS event_title
+    FROM outcome_reviews o
+    LEFT JOIN events e ON e.id = o.event_id
+    WHERE o.reading_id = ?
+    ORDER BY o.reviewed_at DESC, o.id DESC
+  `).all(id);
+
+  const versions = db.prepare(`
+    SELECT *
+    FROM reading_versions
+    WHERE reading_id = ?
+    ORDER BY id
+  `).all(id);
+
+  return {
+    ...reading,
+    cards,
+    events,
+    outcomes,
+    outcome: outcomes[0] ?? null,
+    versions,
+  };
 }
 
 /* ---------- Дневник ---------- */
@@ -557,7 +583,19 @@ function eventDetail(id) {
       r.reading_date,
       r.status,
       c.name AS client_name,
-      (SELECT COUNT(*) FROM reading_cards rc WHERE rc.reading_id = r.id) AS cards_count
+      (SELECT COUNT(*) FROM reading_cards rc WHERE rc.reading_id = r.id) AS cards_count,
+      (SELECT o.rating FROM outcome_reviews o
+        WHERE o.reading_id = r.id
+        ORDER BY o.reviewed_at DESC, o.id DESC LIMIT 1) AS outcome_rating,
+      (SELECT o.reviewed_at FROM outcome_reviews o
+        WHERE o.reading_id = r.id
+        ORDER BY o.reviewed_at DESC, o.id DESC LIMIT 1) AS outcome_reviewed_at,
+      (SELECT o.follow_up_date FROM outcome_reviews o
+        WHERE o.reading_id = r.id
+        ORDER BY o.reviewed_at DESC, o.id DESC LIMIT 1) AS outcome_follow_up_date,
+      (SELECT o.result FROM outcome_reviews o
+        WHERE o.reading_id = r.id
+        ORDER BY o.reviewed_at DESC, o.id DESC LIMIT 1) AS outcome_result
     FROM reading_events re
     JOIN readings r ON r.id = re.reading_id
     LEFT JOIN clients c ON c.id = r.client_id
@@ -578,6 +616,145 @@ function eventHaystack(event) {
     event.reading_titles,
     event.client_names,
   ].filter(Boolean).join(' ').toLowerCase();
+}
+
+/* ---------- Итоги и история трактовок ---------- */
+
+function normalizeOutcome(input) {
+  const rating = String(input?.rating ?? 'pending').trim() || 'pending';
+  if (!OUTCOME_RATINGS.includes(rating)) {
+    throw httpError('Неизвестная оценка итога', 400);
+  }
+
+  const confidence = String(input?.confidence ?? '').trim() || null;
+  if (confidence && !OUTCOME_CONFIDENCES.includes(confidence)) {
+    throw httpError('Неизвестная уверенность в оценке', 400);
+  }
+
+  let eventId = null;
+  const rawEventId = input?.event_id;
+  if (rawEventId !== null && rawEventId !== undefined && rawEventId !== '') {
+    eventId = Number(rawEventId);
+    if (!Number.isInteger(eventId) || eventId <= 0) {
+      throw httpError('Неверный идентификатор события', 400);
+    }
+    if (!db.prepare('SELECT id FROM events WHERE id = ?').get(eventId)) {
+      throw httpError('Событие не найдено', 400);
+    }
+  }
+
+  return {
+    event_id: eventId,
+    result: limitText(input?.result, OUTCOME_TEXT_MAX, 'фактический результат') || null,
+    rating,
+    comment: limitText(input?.comment, OUTCOME_TEXT_MAX, 'комментарий') || null,
+    reviewed_at: normalizeEventDate(input?.reviewed_at, 'Дата оценки') || todayIso(),
+    follow_up_date: normalizeEventDate(input?.follow_up_date, 'Дата возврата к раскладу'),
+    followup_interpretation: limitText(
+      input?.followup_interpretation,
+      OUTCOME_TEXT_MAX,
+      'последующая трактовка',
+    ) || null,
+    confidence,
+  };
+}
+
+function insertReadingVersion(readingId, kind, interpretation, summary, comment) {
+  const body = interpretation || null;
+  const summaryText = summary || null;
+  if (!body && !summaryText && !comment) return null;
+
+  const latest = db.prepare(`
+    SELECT kind, interpretation, summary
+    FROM reading_versions
+    WHERE reading_id = ?
+    ORDER BY id DESC
+    LIMIT 1
+  `).get(readingId);
+
+  if (latest
+    && latest.kind === kind
+    && (latest.interpretation ?? '') === (body ?? '')
+    && (latest.summary ?? '') === (summaryText ?? '')) {
+    return null;
+  }
+
+  const result = db.prepare(`
+    INSERT INTO reading_versions (reading_id, kind, interpretation, summary, comment)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(readingId, kind, body, summaryText, comment || null);
+
+  return Number(result.lastInsertRowid);
+}
+
+function ensureInitialVersion(readingId, reading) {
+  if (!reading.interpretation && !reading.summary) return;
+
+  const existing = db.prepare(`
+    SELECT id FROM reading_versions
+    WHERE reading_id = ? AND kind = 'initial'
+    LIMIT 1
+  `).get(readingId);
+  if (existing) return;
+
+  insertReadingVersion(
+    readingId,
+    'initial',
+    reading.interpretation,
+    reading.summary,
+    'Снимок при завершении расклада',
+  );
+}
+
+function outcomeForReading(readingId) {
+  return db.prepare(`
+    SELECT o.*, e.title AS event_title
+    FROM outcome_reviews o
+    LEFT JOIN events e ON e.id = o.event_id
+    WHERE o.reading_id = ?
+    ORDER BY o.reviewed_at DESC, o.id DESC
+    LIMIT 1
+  `).get(readingId) ?? null;
+}
+
+function pendingOutcomes() {
+  const rows = db.prepare(`
+    SELECT
+      r.id,
+      r.title,
+      r.question,
+      r.reading_date,
+      c.name AS client_name,
+      (SELECT COUNT(*) FROM outcome_reviews o WHERE o.reading_id = r.id) AS outcomes_count,
+      (SELECT o.rating FROM outcome_reviews o
+        WHERE o.reading_id = r.id
+        ORDER BY o.reviewed_at DESC, o.id DESC LIMIT 1) AS latest_rating,
+      (SELECT o.follow_up_date FROM outcome_reviews o
+        WHERE o.reading_id = r.id
+        ORDER BY o.reviewed_at DESC, o.id DESC LIMIT 1) AS follow_up_date,
+      (SELECT GROUP_CONCAT(e.title, ' · ')
+         FROM reading_events re
+         JOIN events e ON e.id = re.event_id
+        WHERE re.reading_id = r.id) AS event_titles
+    FROM readings r
+    LEFT JOIN clients c ON c.id = r.client_id
+    WHERE r.status = 'done'
+    ORDER BY r.reading_date DESC, r.id DESC
+  `).all();
+
+  const today = todayIso();
+
+  return rows
+    .filter((row) => {
+      if (row.outcomes_count === 0) return true;
+      return ['pending', 'insufficient'].includes(row.latest_rating)
+        && Boolean(row.follow_up_date)
+        && row.follow_up_date <= today;
+    })
+    .map((row) => ({
+      ...row,
+      reason: row.outcomes_count === 0 ? 'no_outcome' : 'follow_up',
+    }));
 }
 
 function getStatistics() {
@@ -677,6 +854,8 @@ const routes = [
   ['GET', /^\/api\/stats$/, () => getStats()],
 
   ['GET', /^\/api\/statistics$/, () => getStatistics()],
+
+  ['GET', /^\/api\/outcomes\/pending$/, () => pendingOutcomes()],
 
   ['GET', /^\/api\/cards$/, (req, url) => {
     const conditions = [];
@@ -945,6 +1124,7 @@ const routes = [
 
       const readingId = Number(result.lastInsertRowid);
       replaceReadingCards(readingId, cards);
+      if (reading.status === 'done') ensureInitialVersion(readingId, reading);
       return readingId;
     });
 
@@ -953,7 +1133,7 @@ const routes = [
 
   ['PUT', /^\/api\/readings\/(\d+)$/, async (req, url, match) => {
     const id = Number(match[1]);
-    const existing = db.prepare('SELECT id FROM readings WHERE id = ?').get(id);
+    const existing = db.prepare('SELECT * FROM readings WHERE id = ?').get(id);
     if (!existing) throw httpError('Расклад не найден', 404);
 
     const { reading, cards } = normalizeReading(await readJsonBody(req));
@@ -977,6 +1157,25 @@ const routes = [
       );
 
       replaceReadingCards(id, cards);
+
+      if (reading.status === 'done') {
+        if (existing.status !== 'done') {
+          ensureInitialVersion(id, reading);
+        } else {
+          ensureInitialVersion(id, existing);
+          const textChanged = (existing.interpretation ?? '') !== (reading.interpretation ?? '')
+            || (existing.summary ?? '') !== (reading.summary ?? '');
+          if (textChanged) {
+            insertReadingVersion(
+              id,
+              'update',
+              reading.interpretation,
+              reading.summary,
+              'Правка после завершения',
+            );
+          }
+        }
+      }
     });
 
     return getReadingDetail(id);
@@ -1003,7 +1202,69 @@ const routes = [
       WHERE id = ?
     `).run(interpretation, summary, id);
 
+    if (row.status === 'done') {
+      ensureInitialVersion(id, row);
+      const textChanged = (row.interpretation ?? '') !== (interpretation ?? '')
+        || (row.summary ?? '') !== (summary ?? '');
+      if (textChanged) {
+        insertReadingVersion(id, 'update', interpretation, summary, 'Правка после завершения');
+      }
+    }
+
     return getReadingDetail(id);
+  }],
+
+  ['GET', /^\/api\/readings\/(\d+)\/outcomes$/, (req, url, match) => {
+    const readingId = Number(match[1]);
+    const reading = db.prepare('SELECT id FROM readings WHERE id = ?').get(readingId);
+    if (!reading) throw httpError('Расклад не найден', 404);
+
+    return db.prepare(`
+      SELECT o.*, e.title AS event_title
+      FROM outcome_reviews o
+      LEFT JOIN events e ON e.id = o.event_id
+      WHERE o.reading_id = ?
+      ORDER BY o.reviewed_at DESC, o.id DESC
+    `).all(readingId);
+  }],
+
+  ['POST', /^\/api\/readings\/(\d+)\/outcomes$/, async (req, url, match) => {
+    const readingId = Number(match[1]);
+    const reading = db.prepare('SELECT * FROM readings WHERE id = ?').get(readingId);
+    if (!reading) throw httpError('Расклад не найден', 404);
+
+    const outcome = normalizeOutcome(await readJsonBody(req));
+
+    db.prepare(`
+      INSERT INTO outcome_reviews (
+        reading_id, event_id, result, rating, comment, reviewed_at,
+        follow_up_date, followup_interpretation, confidence
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      readingId,
+      outcome.event_id,
+      outcome.result,
+      outcome.rating,
+      outcome.comment,
+      outcome.reviewed_at,
+      outcome.follow_up_date,
+      outcome.followup_interpretation,
+      outcome.confidence,
+    );
+
+    ensureInitialVersion(readingId, reading);
+
+    if (outcome.followup_interpretation) {
+      insertReadingVersion(
+        readingId,
+        'final',
+        outcome.followup_interpretation,
+        null,
+        'Итоговая трактовка после события',
+      );
+    }
+
+    return getReadingDetail(readingId);
   }],
 
   ['DELETE', /^\/api\/readings\/(\d+)$/, (req, url, match) => {
