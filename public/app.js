@@ -2585,6 +2585,229 @@ function outcomePanelMarkup(reading) {
   `;
 }
 
+function positionOutcomeCurrentMarkup(outcome, earlier = []) {
+  if (!outcome) {
+    return '<p class="muted notes-empty">Пока не оценена. После события отметьте, насколько сбылась эта позиция.</p>';
+  }
+
+  return `
+    <div class="outcome-current position-outcome-current">
+      ${outcomeMetaLine(outcome)
+        ? `<div class="outcome-head"><span class="muted outcome-meta">${outcomeMetaLine(outcome)}</span></div>`
+        : ''}
+      ${outcome.result
+        ? `<div class="event-block"><h3>Что произошло</h3><div class="notes event-notes">${escapeHtml(outcome.result)}</div></div>`
+        : ''}
+      ${outcome.comment
+        ? `<div class="event-block"><h3>Комментарий</h3><div class="notes event-notes">${escapeHtml(outcome.comment)}</div></div>`
+        : ''}
+      ${outcome.followup_interpretation
+        ? `<div class="event-block"><h3>Трактовка после события</h3><div class="notes event-notes">${escapeHtml(outcome.followup_interpretation)}</div></div>`
+        : ''}
+      ${outcome.follow_up_date
+        ? `<p class="outcome-followup">Вернуться к позиции: <strong>${formatDate(outcome.follow_up_date)}</strong></p>`
+        : ''}
+      ${earlier.length > 0
+        ? `<details class="outcome-history">
+             <summary>Предыдущие оценки позиции (${earlier.length})</summary>
+             ${earlier.map((item) => `
+               <div class="outcome-history-item">
+                 <div class="outcome-head">
+                   <span class="outcome-badge ${outcomeRatingClass(item.rating)}">${OUTCOME_RATING_LABELS[item.rating] ?? item.rating}</span>
+                   <span class="muted outcome-meta">${outcomeMetaLine(item)}</span>
+                 </div>
+                 ${item.result ? `<div class="interp-body">${escapeHtml(item.result)}</div>` : ''}
+                 ${item.comment ? `<div class="muted outcome-comment">${escapeHtml(item.comment)}</div>` : ''}
+               </div>
+             `).join('')}
+           </details>`
+        : ''}
+    </div>
+  `;
+}
+
+function positionOutcomesPanelMarkup(reading) {
+  const cards = reading.cards ?? [];
+  const all = reading.position_outcomes ?? [];
+
+  const rows = cards.map((card) => {
+    const list = all.filter((item) => (
+      item.position_index === card.position_index && item.card_id === card.card_id
+    ));
+    const latest = list[0] ?? null;
+
+    return `
+      <div class="position-outcome-row" data-position-index="${card.position_index}">
+        <div class="position-outcome-head">
+          <div class="position-outcome-title">
+            <span class="reading-interp-position">${card.position_index}. ${escapeHtml(card.position_name || `Позиция ${card.position_index}`)}</span>
+            <a href="#/cards/${card.card_id}">${escapeHtml(card.name_ru)}</a>
+            ${card.is_reversed ? '<span class="view-card-reversed">перевёрнутая</span>' : ''}
+          </div>
+          <div class="position-outcome-actions">
+            <span class="outcome-badge ${latest ? outcomeRatingClass(latest.rating) : 'rating-pending'}">${latest
+              ? (OUTCOME_RATING_LABELS[latest.rating] ?? latest.rating)
+              : 'не оценена'}</span>
+            <button class="btn btn-small" type="button" data-position-edit="${card.position_index}">
+              ${latest ? 'Изменить' : 'Оценить'}
+            </button>
+          </div>
+        </div>
+        <div class="position-outcome-body" data-position-body="${card.position_index}">
+          ${positionOutcomeCurrentMarkup(latest, list.slice(1))}
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  return `
+    <div class="panel" id="reading-position-outcomes-panel">
+      <div class="panel-head">
+        <h2>Оценки позиций</h2>
+      </div>
+      <p class="muted reading-originals-note">Можно оценить каждую позицию отдельно. Это дополняет общий итог и не меняет его.</p>
+      ${cards.length > 0
+        ? `<div class="position-outcomes">${rows}</div>`
+        : '<div class="empty">Сначала добавьте карты в расклад.</div>'}
+    </div>
+  `;
+}
+
+function positionOutcomeFormMarkup(card, latest, linkedEvents = []) {
+  const eventSelect = linkedEvents.length > 0
+    ? `
+      <label>Событие
+        <select name="event_id">
+          <option value="">Без события</option>
+          ${linkedEvents.map((event) => `
+            <option value="${event.id}"${latest?.event_id === event.id ? ' selected' : ''}>
+              ${escapeHtml(event.title)}
+            </option>
+          `).join('')}
+        </select>
+      </label>
+    `
+    : '<p class="field-hint muted">С раскладом не связано ни одно событие — оценку можно сохранить и без него.</p>';
+
+  return `
+    <form class="form inline-edit outcome-form position-outcome-form" novalidate>
+      <input type="hidden" name="position_index" value="${card.position_index}">
+      <p class="position-outcome-form-title">${card.position_index}. ${escapeHtml(card.position_name || `Позиция ${card.position_index}`)} · ${escapeHtml(card.name_ru)}</p>
+      ${eventSelect}
+
+      <div class="form-row">
+        <label><span>Оценка<span class="req">*</span></span>
+          <select name="rating">
+            ${OUTCOME_RATING_ORDER.map((rating) => `
+              <option value="${rating}"${(latest?.rating ?? 'pending') === rating ? ' selected' : ''}>
+                ${OUTCOME_RATING_FORM_LABELS[rating]}
+              </option>
+            `).join('')}
+          </select>
+        </label>
+        <label>Уверенность
+          <select name="confidence">
+            <option value="">Не указана</option>
+            ${Object.entries(OUTCOME_CONFIDENCE_LABELS).map(([value, label]) => `
+              <option value="${value}"${latest?.confidence === value ? ' selected' : ''}>${label}</option>
+            `).join('')}
+          </select>
+        </label>
+      </div>
+
+      <div class="form-row">
+        <label>Дата оценки
+          <input type="date" name="reviewed_at" value="${latest?.reviewed_at ?? todayIso()}">
+        </label>
+        <label>Вернуться к позиции
+          <input type="date" name="follow_up_date" value="${latest?.follow_up_date ?? ''}">
+        </label>
+      </div>
+
+      <label>Что произошло по этой позиции
+        <textarea name="result" rows="3" maxlength="5000"
+                  placeholder="Фактический результат именно по этой позиции">${escapeHtml(latest?.result ?? '')}</textarea>
+      </label>
+
+      <label>Комментарий
+        <textarea name="comment" rows="3" maxlength="5000"
+                  placeholder="Насколько трактовка позиции попала в точку и почему">${escapeHtml(latest?.comment ?? '')}</textarea>
+      </label>
+
+      <label>Трактовка после события
+        <textarea name="followup_interpretation" rows="3" maxlength="5000"
+                  placeholder="Что стало понятно по этой позиции теперь">${escapeHtml(latest?.followup_interpretation ?? '')}</textarea>
+      </label>
+
+      <p class="form-error"></p>
+      <div class="form-actions">
+        <button class="btn btn-primary" type="submit">Сохранить оценку позиции</button>
+        <button class="btn" type="button" data-cancel>Отмена</button>
+      </div>
+    </form>
+  `;
+}
+
+function exportReadingJson(reading) {
+  const payload = {
+    format: 'tarot-reading',
+    version: 1,
+    exported_at: new Date().toISOString(),
+    reading: {
+      id: reading.id,
+      title: reading.title,
+      question: reading.question,
+      spread_name: reading.spread_name,
+      reading_date: reading.reading_date,
+      status: reading.status,
+      interpretation: reading.interpretation,
+      summary: reading.summary,
+      tags: reading.tags,
+      client_id: reading.client_id,
+      client_name: reading.client_name,
+      created_at: reading.created_at,
+      updated_at: reading.updated_at,
+    },
+    cards: (reading.cards ?? []).map((card) => ({
+      position_index: card.position_index,
+      position_name: card.position_name,
+      card_id: card.card_id,
+      slug: card.slug,
+      name_ru: card.name_ru,
+      name_en: card.name_en,
+      is_reversed: Boolean(card.is_reversed),
+      note: card.note,
+      interpretation: card.interpretation_id
+        ? {
+            id: card.interpretation_id,
+            title: card.interpretation_title,
+            body: card.interpretation_body,
+          }
+        : null,
+      upright: card.upright,
+      reversed: card.reversed,
+    })),
+    outcomes: reading.outcomes ?? [],
+    position_outcomes: reading.position_outcomes ?? [],
+    versions: reading.versions ?? [],
+    events: reading.events ?? [],
+  };
+
+  const date = reading.reading_date || new Date().toISOString().slice(0, 10);
+  const filename = `reading-${reading.id}-${date}.json`;
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {
+    type: 'application/json;charset=utf-8',
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function versionsPanelMarkup(reading) {
   const versions = reading.versions ?? [];
   if (versions.length === 0) return '';
@@ -2821,6 +3044,8 @@ async function renderReadingView(id) {
           <a class="btn" href="#/readings/${reading.id}/edit">Редактировать</a>
           <button class="btn" type="button" id="reading-pdf"
                   title="Откроется предпросмотр — сохраните его как PDF">Экспорт в PDF</button>
+          <button class="btn" type="button" id="reading-json"
+                  title="Скачать расклад со всеми оценками в формате JSON">Экспорт в JSON</button>
           <button class="btn btn-danger" type="button" id="reading-delete">Удалить</button>
         </div>
       </div>
@@ -2852,6 +3077,8 @@ async function renderReadingView(id) {
     ${editablePanel('summary', 'Выводы', 'Пока не заполнены.')}
 
     ${outcomePanelMarkup(reading)}
+
+    ${positionOutcomesPanelMarkup(reading)}
 
     ${versionsPanelMarkup(reading)}
 
@@ -3065,6 +3292,65 @@ async function renderReadingView(id) {
 
   bindOutcomePanel();
 
+  function paintPositionOutcomesPanel() {
+    const host = document.getElementById('reading-position-outcomes-panel');
+    if (!host) return;
+    host.outerHTML = positionOutcomesPanelMarkup(reading);
+    bindPositionOutcomesPanel();
+  }
+
+  function bindPositionOutcomesPanel() {
+    const panel = document.getElementById('reading-position-outcomes-panel');
+    if (!panel) return;
+
+    panel.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-position-edit]');
+      if (!button) return;
+
+      const positionIndex = Number(button.dataset.positionEdit);
+      const card = (reading.cards ?? []).find((item) => item.position_index === positionIndex);
+      if (!card) return;
+
+      const list = (reading.position_outcomes ?? [])
+        .filter((item) => (
+          item.position_index === positionIndex && item.card_id === card.card_id
+        ));
+      const latest = list[0] ?? null;
+      const body = panel.querySelector(`[data-position-body="${positionIndex}"]`);
+      if (!body) return;
+
+      button.hidden = true;
+      body.innerHTML = positionOutcomeFormMarkup(card, latest, reading.events ?? []);
+      enhanceSelects(body);
+
+      const form = body.querySelector('form');
+      const errorEl = form.querySelector('.form-error');
+      const submit = form.querySelector('button[type="submit"]');
+      form.elements.result.focus();
+
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        errorEl.textContent = '';
+        submit.disabled = true;
+
+        try {
+          reading = await api(`/api/readings/${reading.id}/position-outcomes`, {
+            method: 'POST',
+            body: JSON.stringify(Object.fromEntries(new FormData(form).entries())),
+          });
+          paintPositionOutcomesPanel();
+        } catch (error) {
+          errorEl.textContent = error.message;
+          submit.disabled = false;
+        }
+      });
+
+      form.querySelector('[data-cancel]').addEventListener('click', paintPositionOutcomesPanel);
+    });
+  }
+
+  bindPositionOutcomesPanel();
+
   const addEventSelect = document.getElementById('reading-event-add');
   const addEventButton = document.getElementById('reading-event-add-btn');
   if (addEventSelect && addEventButton) {
@@ -3086,6 +3372,10 @@ async function renderReadingView(id) {
 
   document.getElementById('reading-pdf').addEventListener('click', () => {
     exportReadingPdf(reading);
+  });
+
+  document.getElementById('reading-json').addEventListener('click', () => {
+    exportReadingJson(reading);
   });
 
   document.getElementById('reading-delete').addEventListener('click', async () => {

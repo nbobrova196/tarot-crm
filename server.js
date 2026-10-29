@@ -385,6 +385,14 @@ function getReadingDetail(id) {
     ORDER BY o.reviewed_at DESC, o.id DESC
   `).all(id);
 
+  const positionOutcomes = db.prepare(`
+    SELECT po.*, e.title AS event_title
+    FROM position_outcomes po
+    LEFT JOIN events e ON e.id = po.event_id
+    WHERE po.reading_id = ?
+    ORDER BY po.position_index, po.reviewed_at DESC, po.id DESC
+  `).all(id);
+
   const versions = db.prepare(`
     SELECT *
     FROM reading_versions
@@ -398,6 +406,7 @@ function getReadingDetail(id) {
     events,
     outcomes,
     outcome: outcomes[0] ?? null,
+    position_outcomes: positionOutcomes,
     versions,
   };
 }
@@ -1347,6 +1356,50 @@ const routes = [
         'Итоговая трактовка после события',
       );
     }
+
+    return getReadingDetail(readingId);
+  }],
+
+  ['POST', /^\/api\/readings\/(\d+)\/position-outcomes$/, async (req, url, match) => {
+    const readingId = Number(match[1]);
+    const reading = db.prepare('SELECT * FROM readings WHERE id = ?').get(readingId);
+    if (!reading) throw httpError('Расклад не найден', 404);
+
+    const body = await readJsonBody(req);
+    const positionIndex = Number(body?.position_index);
+    if (!Number.isInteger(positionIndex) || positionIndex < 1) {
+      throw httpError('Неверный номер позиции', 400);
+    }
+
+    const position = db.prepare(`
+      SELECT rc.position_index, rc.position_name, rc.card_id
+      FROM reading_cards rc
+      WHERE rc.reading_id = ? AND rc.position_index = ?
+    `).get(readingId, positionIndex);
+    if (!position) throw httpError('Позиция не найдена в раскладе', 400);
+
+    const outcome = normalizeOutcome(body);
+
+    db.prepare(`
+      INSERT INTO position_outcomes (
+        reading_id, position_index, position_name, card_id, event_id,
+        result, rating, comment, reviewed_at, follow_up_date,
+        followup_interpretation, confidence
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      readingId,
+      position.position_index,
+      position.position_name,
+      position.card_id,
+      outcome.event_id,
+      outcome.result,
+      outcome.rating,
+      outcome.comment,
+      outcome.reviewed_at,
+      outcome.follow_up_date,
+      outcome.followup_interpretation,
+      outcome.confidence,
+    );
 
     return getReadingDetail(readingId);
   }],

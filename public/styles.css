@@ -2211,6 +2211,74 @@ input[type="date"] {
   max-width: 720px;
 }
 
+/* ---------- Оценки позиций ---------- */
+
+.position-outcomes {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.position-outcome-row {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.position-outcome-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.position-outcome-title {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.position-outcome-title a {
+  color: var(--gold-soft);
+  text-decoration: none;
+}
+
+.position-outcome-title a:hover {
+  text-decoration: underline;
+}
+
+.position-outcome-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.position-outcome-body {
+  margin-top: 10px;
+}
+
+.position-outcome-current .event-block:first-of-type {
+  margin-top: 0;
+}
+
+.position-outcome-form-title {
+  margin: 0 0 12px;
+  color: var(--gold-soft);
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.position-outcome-form {
+  max-width: 720px;
+}
+
 .version-list {
   display: flex;
   flex-direction: column;

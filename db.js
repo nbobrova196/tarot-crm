@@ -19,7 +19,7 @@ db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
 db.exec('PRAGMA busy_timeout = 5000');
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 const schemaV1 = `
 CREATE TABLE IF NOT EXISTS cards (
@@ -294,6 +294,45 @@ if (currentVersion < 6) {
         )
     `);
 
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+// Версия 7: оценка отдельных позиций расклада.
+// История оценок append-only: каждая запись — новый снимок по позиции.
+// Общий итог расклада остаётся в outcome_reviews и на эти записи не влияет.
+const schemaV7 = `
+CREATE TABLE IF NOT EXISTS position_outcomes (
+  id                      INTEGER PRIMARY KEY,
+  reading_id              INTEGER NOT NULL REFERENCES readings(id) ON DELETE CASCADE,
+  position_index          INTEGER NOT NULL,
+  position_name           TEXT,
+  card_id                 INTEGER REFERENCES cards(id) ON DELETE SET NULL,
+  event_id                INTEGER REFERENCES events(id) ON DELETE SET NULL,
+  result                  TEXT,
+  rating                  TEXT NOT NULL DEFAULT 'pending'
+                          CHECK (rating IN ('matched', 'partial', 'not_matched', 'insufficient', 'pending')),
+  comment                 TEXT,
+  reviewed_at             TEXT NOT NULL DEFAULT (date('now')),
+  follow_up_date          TEXT,
+  followup_interpretation TEXT,
+  confidence              TEXT CHECK (confidence IS NULL OR confidence IN ('low', 'medium', 'high')),
+  created_at              TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_position_outcomes_reading
+  ON position_outcomes(reading_id, position_index, reviewed_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_position_outcomes_event
+  ON position_outcomes(event_id);
+`;
+
+if (currentVersion < 7) {
+  db.exec('BEGIN');
+  try {
+    db.exec(schemaV7);
     db.exec('COMMIT');
   } catch (error) {
     db.exec('ROLLBACK');
