@@ -2,8 +2,8 @@
 // Новые разделы добавляются в массив routes.
 
 import http from 'node:http';
-import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { createReadStream, existsSync, mkdirSync } from 'node:fs';
+import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SCHEMA_VERSION, db, dbFile, getStats } from './db.js';
@@ -11,6 +11,7 @@ import { seedCards } from './seed.js';
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(rootDir, 'public');
+const backupDir = path.join(path.dirname(dbFile), 'backups');
 const port = Number(process.env.PORT ?? 3000);
 
 const MIME = {
@@ -955,6 +956,70 @@ function getStatistics() {
   };
 }
 
+/* ---------- Резервные копии ---------- */
+
+function backupName(now = new Date()) {
+  const pad = (value) => String(value).padStart(2, '0');
+  const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`
+    + `-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+
+  let name = `tarot-${stamp}.db`;
+  let counter = 2;
+  while (existsSync(path.join(backupDir, name))) {
+    name = `tarot-${stamp}-${counter}.db`;
+    counter += 1;
+  }
+  return name;
+}
+
+async function backupInfo(name) {
+  const filePath = path.join(backupDir, name);
+  const info = await stat(filePath);
+  return {
+    name,
+    file: path.relative(rootDir, filePath),
+    size: info.size,
+    created_at: info.mtime.toISOString(),
+  };
+}
+
+async function createBackup() {
+  mkdirSync(backupDir, { recursive: true });
+  const name = backupName();
+  const filePath = path.join(backupDir, name);
+
+  // VACUUM INTO делает целостный снимок базы вместе с данными из WAL,
+  // не останавливая сервер.
+  db.exec(`VACUUM INTO '${filePath.replace(/'/g, "''")}'`);
+
+  return backupInfo(name);
+}
+
+async function listBackups() {
+  let names = [];
+  try {
+    names = await readdir(backupDir);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+    return { directory: path.relative(rootDir, backupDir), backups: [] };
+  }
+
+  const backups = [];
+  for (const name of names.filter((item) => item.endsWith('.db'))) {
+    try {
+      backups.push(await backupInfo(name));
+    } catch {
+      // файл могли удалить или перенести между чтением папки и проверкой
+    }
+  }
+  backups.sort((a, b) => b.created_at.localeCompare(a.created_at));
+
+  return {
+    directory: path.relative(rootDir, backupDir),
+    backups: backups.slice(0, 20),
+  };
+}
+
 const routes = [
   ['GET', /^\/api\/health$/, () => ({
     ok: true,
@@ -964,6 +1029,10 @@ const routes = [
   })],
 
   ['GET', /^\/api\/stats$/, () => getStats()],
+
+  ['GET', /^\/api\/backups$/, () => listBackups()],
+
+  ['POST', /^\/api\/backup$/, () => createBackup()],
 
   ['GET', /^\/api\/feedback$/, (req, url) => {
     const topic = url.searchParams.get('topic');

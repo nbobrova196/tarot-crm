@@ -628,6 +628,48 @@ function statTile(tile) {
   `;
 }
 
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return '';
+  if (bytes < 1024) return `${bytes} Б`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} КБ`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`;
+}
+
+async function loadBackupStatus() {
+  const node = document.getElementById('backup-status');
+  if (!node) return;
+
+  try {
+    const data = await api('/api/backups');
+    const latest = data.backups?.[0];
+    node.textContent = latest
+      ? `Последняя копия: ${formatDateTime(latest.created_at)} · ${latest.file} · ${formatBytes(latest.size)}`
+      : 'Резервных копий пока нет. Создайте первую перед важными изменениями.';
+  } catch {
+    node.textContent = 'Не удалось проверить резервные копии.';
+  }
+}
+
+async function makeBackup() {
+  const button = document.getElementById('backup-now');
+  const status = document.getElementById('backup-status');
+  if (!button || button.disabled) return;
+
+  button.disabled = true;
+  if (status) status.textContent = 'Создаю резервную копию…';
+
+  try {
+    const backup = await api('/api/backup', { method: 'POST' });
+    if (status) {
+      status.textContent = `Копия сохранена: ${backup.file} · ${formatBytes(backup.size)}`;
+    }
+  } catch (error) {
+    if (status) status.textContent = `Не удалось создать копию: ${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function renderOverview() {
   viewEl.innerHTML = `
     <div class="stats">${TILES.map(statTile).join('')}</div>
@@ -637,7 +679,9 @@ async function renderOverview() {
     <div class="quick-actions">
       <a class="btn btn-primary" href="#/events/new">+ Создать событие</a>
       <a class="btn" href="#/readings/new">+ Создать расклад</a>
+      <button class="btn" type="button" id="backup-now">Создать резервную копию</button>
     </div>
+    <p class="backup-status muted" id="backup-status">Проверяю резервные копии…</p>
 
     <div class="panel" id="pending-outcomes-panel">
       <div class="panel-head">
@@ -671,6 +715,9 @@ async function renderOverview() {
       <div class="latest-readings" id="latest-journal"><p class="muted">Загрузка…</p></div>
     </div>
   `;
+
+  document.getElementById('backup-now')?.addEventListener('click', makeBackup);
+  loadBackupStatus();
 
   try {
     const [statsResponse, readingsResponse, journalResponse, pendingResponse, eventsResponse] = await Promise.all([

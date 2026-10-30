@@ -2770,6 +2770,12 @@ input[type="date"] {
   margin: 0 0 22px;
 }
 
+.backup-status {
+  margin: -12px 0 22px;
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
 .outcome-shares {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
