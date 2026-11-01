@@ -174,12 +174,14 @@ const TRIPLETS = [
 
 const SPREAD_TYPES = [
   '1 карта',
+  'Да и Нет',
   ...TRIPLETS.map((triplet) => triplet.name),
   'Кельтский крест',
 ];
 
 const SPREAD_POSITIONS = {
   '1 карта': ['Карта'],
+  'Да и Нет': ['Да', 'Нет'],
   ...Object.fromEntries(TRIPLETS.map((triplet) => [triplet.name, triplet.positions])),
   'Кельтский крест': [
     'Суть вопроса',
@@ -4178,6 +4180,43 @@ function journalEntryRow(entry) {
   `;
 }
 
+function journalEventRow(event) {
+  const excerpt = event.description || event.result || '';
+  const meta = [
+    event.category,
+    event.client_names,
+    event.readings_count ? eventReadingsLabel(event.readings_count) : '',
+  ].filter(Boolean).map(escapeHtml).join(' · ');
+
+  return `
+    <a class="journal-entry journal-entry-event" href="#/events/${event.id}">
+      <div class="journal-entry-main">
+        <div class="journal-entry-title">
+          <span class="journal-event-mark">Событие</span>
+          ${escapeHtml(event.title)}
+        </div>
+        ${excerpt ? `<div class="journal-entry-excerpt">${escapeHtml(journalExcerpt(excerpt, 220))}</div>` : ''}
+        ${meta ? `<div class="journal-entry-event-meta">${meta}</div>` : ''}
+      </div>
+      <div class="journal-entry-side">
+        <span class="status-badge ${eventStatusClass(event.status)}">${EVENT_STATUS_LABELS[event.status] ?? event.status}</span>
+        <span class="journal-entry-arrow" aria-hidden="true">→</span>
+      </div>
+    </a>
+  `;
+}
+
+function journalGroupSummary(entryCount, eventCount) {
+  const parts = [];
+  if (entryCount > 0) {
+    parts.push(`${entryCount} ${plural(entryCount, ['запись', 'записи', 'записей'])}`);
+  }
+  if (eventCount > 0) {
+    parts.push(`${eventCount} ${plural(eventCount, ['событие', 'события', 'событий'])}`);
+  }
+  return parts.join(' · ');
+}
+
 /* ---------- Календарь ---------- */
 
 const CALENDAR_WEEKDAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
@@ -4539,7 +4578,7 @@ async function renderJournal(params = new URLSearchParams()) {
       button.classList.toggle('is-active', active);
       button.setAttribute('aria-pressed', String(active));
     }
-    calendarFilters.hidden = state.view !== 'calendar';
+    calendarFilters.hidden = false;
 
     for (const button of calendarFilters.querySelectorAll('[data-calendar-toggle]')) {
       const active = button.dataset.calendarToggle === 'events'
@@ -4557,7 +4596,8 @@ async function renderJournal(params = new URLSearchParams()) {
       || state.from
       || state.to
       || state.tag
-      || (state.view === 'calendar' && (!state.showEvents || state.includeArchived))
+      || !state.showEvents
+      || state.includeArchived
     );
   }
 
@@ -4567,9 +4607,9 @@ async function renderJournal(params = new URLSearchParams()) {
       next.set('view', 'calendar');
       next.set('month', state.month);
       if (state.selectedDate) next.set('date', state.selectedDate);
-      if (!state.showEvents) next.set('events', '0');
-      if (state.includeArchived) next.set('archived', '1');
     }
+    if (!state.showEvents) next.set('events', '0');
+    if (state.includeArchived) next.set('archived', '1');
     if (state.query.trim()) next.set('q', state.query.trim());
     if (state.clientId) next.set('client', state.clientId);
     if (state.from) next.set('from', state.from);
@@ -4606,33 +4646,80 @@ async function renderJournal(params = new URLSearchParams()) {
     });
   }
 
-  function paintList(visible) {
-    counter.textContent = `${visible.length} ${plural(visible.length, ['запись', 'записи', 'записей'])}`;
+  function filteredEvents() {
+    if (!state.showEvents || state.tag) return [];
 
-    if (visible.length === 0) {
-      list.innerHTML = entries.length === 0
-        ? '<div class="empty">Пока ни одной записи.<br><a href="#/journal/new">Добавить первую</a></div>'
+    const query = state.query.trim().toLowerCase();
+
+    return events.filter((event) => {
+      if (!state.includeArchived && CALENDAR_HIDDEN_EVENT_STATUSES.includes(event.status)) {
+        return false;
+      }
+
+      const date = calendarEventDate(event);
+      if (state.from && (!date || date < state.from)) return false;
+      if (state.to && (!date || date > state.to)) return false;
+
+      if (state.clientId) {
+        const clientIds = String(event.client_ids ?? '').split(',').filter(Boolean);
+        if (!clientIds.includes(state.clientId)) return false;
+      }
+
+      if (!query) return true;
+
+      const haystack = [
+        event.title,
+        event.description,
+        event.category,
+        event.result,
+        event.notes,
+        event.reading_titles,
+        event.client_names,
+      ].filter(Boolean).join(' ').toLowerCase();
+
+      return haystack.includes(query);
+    });
+  }
+
+  function paintList(visibleEntries, visibleEvents) {
+    const total = visibleEntries.length + visibleEvents.length;
+    counter.textContent = journalGroupSummary(visibleEntries.length, visibleEvents.length);
+
+    if (total === 0) {
+      list.innerHTML = entries.length === 0 && events.length === 0
+        ? '<div class="empty">Пока ни одной записи или события.<br><a href="#/journal/new">Добавить запись</a> · <a href="#/events/new">Создать событие</a></div>'
         : '<div class="empty">Ничего не найдено. Попробуйте изменить фильтры.</div>';
       return;
     }
 
-    const groups = [];
-    for (const entry of visible) {
-      const last = groups[groups.length - 1];
-      if (last && last.date === entry.entry_date) {
-        last.entries.push(entry);
-      } else {
-        groups.push({ date: entry.entry_date, entries: [entry] });
-      }
+    const buckets = new Map();
+    const bucketFor = (date) => {
+      const key = date || '';
+      if (!buckets.has(key)) buckets.set(key, { date: key, entries: [], events: [] });
+      return buckets.get(key);
+    };
+
+    for (const entry of visibleEntries) {
+      bucketFor(entry.entry_date).entries.push(entry);
     }
+    for (const event of visibleEvents) {
+      bucketFor(calendarEventDate(event)).events.push(event);
+    }
+
+    const groups = [...buckets.values()].sort((a, b) => {
+      if (!a.date) return 1;
+      if (!b.date) return -1;
+      return b.date.localeCompare(a.date);
+    });
 
     list.innerHTML = groups.map((group) => `
       <div class="journal-day">
-        <span class="journal-day-date">${formatLongDate(group.date)}</span>
-        <span class="journal-day-count">${group.entries.length} ${plural(group.entries.length, ['запись', 'записи', 'записей'])}</span>
+        <span class="journal-day-date">${group.date ? formatLongDate(group.date) : 'Без даты'}</span>
+        <span class="journal-day-count">${journalGroupSummary(group.entries.length, group.events.length)}</span>
       </div>
       <div class="panel journal-entries">
         ${group.entries.map(journalEntryRow).join('')}
+        ${group.events.map(journalEventRow).join('')}
       </div>
     `).join('');
   }
@@ -4651,9 +4738,10 @@ async function renderJournal(params = new URLSearchParams()) {
 
   function paint() {
     updateReset();
-    const visible = filteredEntries();
-    if (state.view === 'calendar') paintCalendar(visible);
-    else paintList(visible);
+    const visibleEntries = filteredEntries();
+    const visibleEvents = filteredEvents();
+    if (state.view === 'calendar') paintCalendar(visibleEntries);
+    else paintList(visibleEntries, visibleEvents);
     syncUrl();
   }
 

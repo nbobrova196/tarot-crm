@@ -585,7 +585,11 @@ const EVENT_SELECT = `
        FROM reading_events re
        JOIN readings r ON r.id = re.reading_id
        LEFT JOIN clients c ON c.id = r.client_id
-      WHERE re.event_id = e.id) AS client_names
+      WHERE re.event_id = e.id) AS client_names,
+    (SELECT GROUP_CONCAT(DISTINCT r.client_id)
+       FROM reading_events re
+       JOIN readings r ON r.id = re.reading_id
+      WHERE re.event_id = e.id AND r.client_id IS NOT NULL) AS client_ids
   FROM events e
 `;
 

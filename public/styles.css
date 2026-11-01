@@ -3082,6 +3082,33 @@ input[type="date"] {
   text-decoration: none;
 }
 
+.journal-entry-event {
+  background: rgba(126, 169, 214, 0.035);
+}
+
+.journal-entry-event:hover {
+  background: rgba(126, 169, 214, 0.07);
+}
+
+.journal-event-mark {
+  display: inline-block;
+  margin-right: 7px;
+  padding: 1px 7px;
+  border: 1px solid rgba(126, 169, 214, 0.4);
+  border-radius: 999px;
+  color: #9fc3e8;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  vertical-align: 1px;
+}
+
+.journal-entry-event-meta {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .journal-entry-main {
   min-width: 0;
 }
