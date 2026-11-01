@@ -19,7 +19,7 @@ db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
 db.exec('PRAGMA busy_timeout = 5000');
 
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 const schemaV1 = `
 CREATE TABLE IF NOT EXISTS cards (
@@ -391,6 +391,27 @@ if (currentVersion < 9) {
   db.exec('BEGIN');
   try {
     db.exec(schemaV9);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+// Версия 10: трактовка может относиться к конкретному раскладу.
+// NULL — общая трактовка, видна во всех раскладах. Старые трактовки
+// автоматически остаются общими.
+const schemaV10 = `
+ALTER TABLE card_interpretations ADD COLUMN spread_name TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_card_interp_spread
+  ON card_interpretations(spread_name, card_id, orientation);
+`;
+
+if (currentVersion < 10) {
+  db.exec('BEGIN');
+  try {
+    db.exec(schemaV10);
     db.exec('COMMIT');
   } catch (error) {
     db.exec('ROLLBACK');

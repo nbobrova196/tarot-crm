@@ -199,7 +199,9 @@ function normalizeInterpretation(input) {
   const body = limitText(input?.body ?? '', CARD_INTERPRETATION_TEXT_MAX, 'Трактовка');
   if (!body) throw httpError('Трактовка не может быть пустой', 400);
 
-  return { orientation, title: title || null, body };
+  const spreadName = limitText(input?.spread_name ?? '', 120, 'Расклад') || null;
+
+  return { orientation, title: title || null, body, spread_name: spreadName };
 }
 
 function todayIso() {
@@ -229,12 +231,14 @@ function normalizeReading(input) {
     throw httpError('Неизвестный статус расклада', 400);
   }
 
+  const spreadName = limitText(input?.spread_name, 100, 'тип расклада') || null;
+
   const rawCards = input?.cards ?? [];
   if (!Array.isArray(rawCards)) throw httpError('Список карт должен быть массивом', 400);
   if (rawCards.length > 25) throw httpError('Слишком много карт в раскладе (максимум 25)', 400);
 
   const findCard = db.prepare('SELECT id FROM cards WHERE id = ?');
-  const findInterpretation = db.prepare('SELECT id, card_id, orientation FROM card_interpretations WHERE id = ?');
+  const findInterpretation = db.prepare('SELECT id, card_id, orientation, spread_name FROM card_interpretations WHERE id = ?');
 
   const cards = rawCards.map((item, index) => {
     const cardId = Number(item?.card_id);
@@ -271,6 +275,9 @@ function normalizeReading(input) {
       if (interpretation.orientation !== (isReversed ? 'reversed' : 'upright')) {
         throw httpError(`Карта №${index + 1}: трактовка не подходит к положению карты`, 400);
       }
+      if (interpretation.spread_name && interpretation.spread_name !== spreadName) {
+        throw httpError(`Карта №${index + 1}: трактовка относится к другому раскладу`, 400);
+      }
     }
 
     return {
@@ -292,7 +299,7 @@ function normalizeReading(input) {
       client_id: clientId,
       title: limitText(input?.title, 200, 'заголовок') || null,
       question: limitText(input?.question, 1000, 'вопрос') || null,
-      spread_name: limitText(input?.spread_name, 100, 'тип расклада') || null,
+      spread_name: spreadName,
       reading_date: readingDate,
       status,
       interpretation: limitText(input?.interpretation, READING_TEXT_MAX, 'трактовка') || null,
@@ -1207,9 +1214,9 @@ const routes = [
 
     const data = normalizeInterpretation(await readJsonBody(req));
     const result = db.prepare(`
-      INSERT INTO card_interpretations (card_id, orientation, title, body)
-      VALUES (?, ?, ?, ?)
-    `).run(cardId, data.orientation, data.title, data.body);
+      INSERT INTO card_interpretations (card_id, orientation, title, body, spread_name)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(cardId, data.orientation, data.title, data.body, data.spread_name);
 
     return db.prepare('SELECT * FROM card_interpretations WHERE id = ?')
       .get(Number(result.lastInsertRowid));
@@ -1223,9 +1230,9 @@ const routes = [
     const data = normalizeInterpretation(await readJsonBody(req));
     db.prepare(`
       UPDATE card_interpretations
-      SET orientation = ?, title = ?, body = ?, updated_at = datetime('now')
+      SET orientation = ?, title = ?, body = ?, spread_name = ?, updated_at = datetime('now')
       WHERE id = ?
-    `).run(data.orientation, data.title, data.body, id);
+    `).run(data.orientation, data.title, data.body, data.spread_name, id);
 
     return db.prepare('SELECT * FROM card_interpretations WHERE id = ?').get(id);
   }],

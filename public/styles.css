@@ -645,6 +645,21 @@ input[type="search"]::-webkit-search-cancel-button {
   color: #b9a8d6;
 }
 
+.interp-spread {
+  padding: 1px 8px;
+  border: 1px solid rgba(126, 169, 214, 0.4);
+  border-radius: 999px;
+  color: #9fc3e8;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.interp-spread.is-all {
+  border-color: var(--line);
+  color: var(--muted);
+}
+
 .interp-title {
   font-size: 13.5px;
 }
@@ -1721,6 +1736,15 @@ input[type="date"] {
 .interp-none .icon-btn {
   margin-left: 2px;
   vertical-align: middle;
+}
+
+.interp-add {
+  margin: 5px 0 0;
+  font-size: 12px;
+}
+
+.interp-add a {
+  color: var(--gold-soft);
 }
 
 .reading-card-original {

@@ -1125,6 +1125,7 @@ async function renderCardDetail(id) {
         <span class="interp-orientation ${item.orientation}">
           ${item.orientation === 'upright' ? 'прямое' : 'перевёрнутое'}
         </span>
+        <span class="interp-spread${item.spread_name ? '' : ' is-all'}">${escapeHtml(item.spread_name || 'Для всех')}</span>
         ${item.title ? `<span class="interp-title">${escapeHtml(item.title)}</span>` : ''}
       </div>
       <div class="interp-body">${escapeHtml(item.body)}</div>
@@ -1198,7 +1199,7 @@ async function renderCardDetail(id) {
   `;
 }
 
-async function renderCardEdit(id) {
+async function renderCardEdit(id, options = {}) {
   viewEl.innerHTML = '<p class="muted">Загрузка карты…</p>';
 
   let card;
@@ -1219,7 +1220,16 @@ async function renderCardEdit(id) {
   document.title = `Мои трактовки: ${card.name_ru} · Таро`;
 
   // null — форма закрыта; иначе черновик формы (id = null для новой записи).
-  let formState = null;
+  const initialSpread = String(options.spread ?? '').trim();
+  let formState = initialSpread
+    ? {
+        id: null,
+        orientation: options.orientation === 'reversed' ? 'reversed' : 'upright',
+        title: '',
+        body: '',
+        spread_name: initialSpread,
+      }
+    : null;
 
   viewEl.innerHTML = `
     <a class="back-link" href="#/cards/${card.id}">← к карте</a>
@@ -1273,6 +1283,7 @@ async function renderCardEdit(id) {
           <span class="interp-orientation ${item.orientation}">
             ${item.orientation === 'upright' ? 'прямое' : 'перевёрнутое'}
           </span>
+          <span class="interp-spread${item.spread_name ? '' : ' is-all'}">${escapeHtml(item.spread_name || 'Для всех')}</span>
           ${item.title ? `<span class="interp-title">${escapeHtml(item.title)}</span>` : ''}
           <span class="interp-actions">
             <button class="icon-btn" type="button" data-action="edit" data-id="${item.id}"
@@ -1288,9 +1299,23 @@ async function renderCardEdit(id) {
 
   function paintInterps() {
     const list = card.interpretations ?? [];
+    const spreadNames = [...SPREAD_TYPES];
+    if (formState?.spread_name && !spreadNames.includes(formState.spread_name)) {
+      spreadNames.push(formState.spread_name);
+    }
 
     const formHtml = formState ? `
       <form class="form interp-form" id="interp-form" novalidate>
+        <label>Расклад
+          <select name="spread_name">
+            <option value="">Для всех раскладов</option>
+            ${spreadNames.map((name) => `
+              <option value="${escapeHtml(name)}"${formState.spread_name === name ? ' selected' : ''}>
+                ${escapeHtml(name)}
+              </option>
+            `).join('')}
+          </select>
+        </label>
         <div class="form-row">
           <label>Положение
             <select name="orientation">
@@ -1342,7 +1367,7 @@ async function renderCardEdit(id) {
     const action = button.dataset.action;
 
     if (action === 'add') {
-      formState = { id: null, orientation: 'upright', title: '', body: '' };
+      formState = { id: null, orientation: 'upright', title: '', body: '', spread_name: '' };
       paintInterps();
       document.querySelector('#interp-form textarea')?.focus();
       return;
@@ -1364,6 +1389,7 @@ async function renderCardEdit(id) {
         orientation: item.orientation,
         title: item.title ?? '',
         body: item.body,
+        spread_name: item.spread_name ?? '',
       };
       paintInterps();
       document.querySelector('#interp-form textarea')?.focus();
@@ -1399,6 +1425,7 @@ async function renderCardEdit(id) {
       orientation: data.get('orientation'),
       title: data.get('title'),
       body: data.get('body'),
+      spread_name: data.get('spread_name'),
     };
 
     const submit = form.querySelector('button[type="submit"]');
@@ -2225,7 +2252,12 @@ async function renderReadingForm(id, options = {}) {
   function interpretationsFor(card) {
     const source = deckById.get(card.card_id)?.interpretations ?? [];
     const orientation = card.is_reversed ? 'reversed' : 'upright';
-    return source.filter((item) => item.orientation === orientation);
+    const spread = spreadSelect.value;
+    return source.filter((item) => {
+      if (item.orientation !== orientation) return false;
+      if (!item.spread_name) return true;
+      return Boolean(spread) && item.spread_name === spread;
+    });
   }
 
   function hasValidInterpretation(card) {
@@ -2283,6 +2315,29 @@ async function renderReadingForm(id, options = {}) {
       if (!selected) card.interpretation_id = null;
       const source = deckById.get(card.card_id);
       const original = (card.is_reversed ? source?.reversed : source?.upright) ?? '';
+      const spreadSpecific = interps.filter((item) => item.spread_name);
+      const universalInterps = interps.filter((item) => !item.spread_name);
+      const interpOption = (item) => `
+        <option value="${item.id}"${selected?.id === item.id ? ' selected' : ''}>
+          ${escapeHtml(item.title || shortText(item.body, 40))}
+        </option>
+      `;
+      const interpGroups = [
+        spreadSpecific.length > 0
+          ? `<optgroup label="Для «${escapeHtml(spreadSelect.value)}»">${spreadSpecific.map(interpOption).join('')}</optgroup>`
+          : '',
+        universalInterps.length > 0
+          ? `<optgroup label="Общие">${universalInterps.map(interpOption).join('')}</optgroup>`
+          : '',
+      ].join('');
+
+      const addParams = new URLSearchParams();
+      if (spreadSelect.value) addParams.set('spread', spreadSelect.value);
+      addParams.set('orientation', card.is_reversed ? 'reversed' : 'upright');
+      const addHref = `#/cards/${card.card_id}/edit?${addParams.toString()}`;
+      const spreadSuffix = spreadSelect.value
+        ? ` в раскладе «${escapeHtml(spreadSelect.value)}»`
+        : '';
 
       return `
       <div class="reading-card-row" data-index="${index}">
@@ -2306,18 +2361,17 @@ async function renderReadingForm(id, options = {}) {
             ${interps.length > 0
               ? `<select class="interp-pick" data-field="interpretation_id">
                    <option value="">Без своей трактовки</option>
-                   ${interps.map((item) => `
-                     <option value="${item.id}"${selected?.id === item.id ? ' selected' : ''}>
-                       ${escapeHtml(item.title || shortText(item.body, 40))}
-                     </option>
-                   `).join('')}
+                   ${interpGroups}
                  </select>
                  <p class="interp-preview"${selected ? '' : ' hidden'}>${selected
                    ? escapeHtml(shortText(selected.body, 180))
-                   : ''}</p>`
+                   : ''}</p>
+                 ${spreadSelect.value && spreadSpecific.length === 0
+                   ? `<p class="interp-add"><a href="${escapeHtml(addHref)}" target="_blank" rel="noopener">Добавить трактовку для «${escapeHtml(spreadSelect.value)}»</a></p>`
+                   : ''}`
               : `<p class="interp-none">
-                   Нет своих трактовок для ${card.is_reversed ? 'перевёрнутого' : 'прямого'} положения.
-                   <a href="#/cards/${card.card_id}/edit" target="_blank" rel="noopener">Добавить</a>
+                   Нет своих трактовок для ${card.is_reversed ? 'перевёрнутого' : 'прямого'} положения${spreadSuffix}.
+                   <a href="${escapeHtml(addHref)}" target="_blank" rel="noopener">Добавить</a>
                    <button type="button" class="icon-btn" data-action="refresh-interps"
                            title="Обновить список трактовок">↻</button>
                  </p>`}
@@ -2433,6 +2487,7 @@ async function renderReadingForm(id, options = {}) {
     if (template.length > 0 && hasCustomNames) {
       if (!confirm('Заменить названия позиций по шаблону?')) {
         paintHints();
+        paintReadingCards();
         return;
       }
     }
@@ -6017,7 +6072,10 @@ function route() {
   } else if (section.id === 'overview') {
     renderOverview();
   } else if (section.id === 'cards' && action && sub === 'edit') {
-    renderCardEdit(action);
+    renderCardEdit(action, {
+      spread: params.get('spread'),
+      orientation: params.get('orientation'),
+    });
   } else if (section.id === 'cards' && action) {
     renderCardDetail(action);
   } else if (section.id === 'cards') {
