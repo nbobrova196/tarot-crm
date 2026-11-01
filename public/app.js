@@ -174,14 +174,14 @@ const TRIPLETS = [
 
 const SPREAD_TYPES = [
   '1 карта',
-  'Да и Нет',
+  'Да/Нет',
   ...TRIPLETS.map((triplet) => triplet.name),
   'Кельтский крест',
 ];
 
 const SPREAD_POSITIONS = {
   '1 карта': ['Карта'],
-  'Да и Нет': ['Да', 'Нет'],
+  'Да/Нет': ['Ответ'],
   ...Object.fromEntries(TRIPLETS.map((triplet) => [triplet.name, triplet.positions])),
   'Кельтский крест': [
     'Суть вопроса',
@@ -2189,11 +2189,13 @@ async function renderReadingForm(id, options = {}) {
   function paintHints() {
     const positions = currentPositions();
 
-    spreadHint.textContent = positions.length === 0
-      ? 'Выберите шаблон — названия позиций подставятся автоматически.'
-      : positions.length <= 3
-        ? positions.join(' · ')
-        : `${positions.length} ${plural(positions.length, ['позиция', 'позиции', 'позиций'])}`;
+    spreadHint.textContent = spreadSelect.value === 'Да/Нет'
+      ? 'Вопрос, на который можно ответить «да» или «нет» · одна карта'
+      : positions.length === 0
+        ? 'Выберите шаблон — названия позиций подставятся автоматически.'
+        : positions.length <= 3
+          ? positions.join(' · ')
+          : `${positions.length} ${plural(positions.length, ['позиция', 'позиции', 'позиций'])}`;
 
     if (positions.length === 0) {
       drawHint.textContent = 'Без шаблона — 3 карты';
