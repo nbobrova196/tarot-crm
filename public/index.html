@@ -39,6 +39,20 @@
             </svg>
           </button>
         </div>
+        <div class="sidebar-backup">
+          <button class="sidebar-backup-btn" id="backup-now" type="button"
+                  title="Создать резервную копию базы">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"
+                 aria-hidden="true" focusable="false">
+              <path d="M4 4h13l3 3v13H4z"></path>
+              <path d="M8 4v6h8V4"></path>
+              <path d="M8 20v-6h8v6"></path>
+            </svg>
+            <span id="backup-label">Резервная копия</span>
+          </button>
+          <div class="sidebar-backup-status" id="backup-status" aria-live="polite">проверяю копии…</div>
+        </div>
       </div>
     </aside>
 

@@ -187,6 +187,8 @@ const FEEDBACK_PAGE_MAX = 500;
 const FEEDBACK_PAGE_TITLE_MAX = 300;
 const FEEDBACK_USER_AGENT_MAX = 500;
 
+const DAILY_ORIENTATIONS = ['upright', 'reversed'];
+
 function normalizeInterpretation(input) {
   const orientation = String(input?.orientation ?? 'upright').trim() || 'upright';
   if (!CARD_ORIENTATIONS.includes(orientation)) {
@@ -700,6 +702,50 @@ function normalizeFeedback(input) {
   };
 }
 
+/* ---------- Карта дня ---------- */
+
+function dailyCardDetail(date) {
+  const row = db.prepare(`
+    SELECT c.*, dc.draw_date, dc.orientation, dc.created_at AS drawn_at
+    FROM daily_cards dc
+    JOIN cards c ON c.id = dc.card_id
+    WHERE dc.draw_date = ?
+  `).get(date);
+
+  if (!row) return { date, card: null };
+
+  const { draw_date, orientation, drawn_at, ...card } = row;
+  return {
+    date: draw_date,
+    orientation,
+    drawn_at,
+    card: parseCard(card),
+  };
+}
+
+function drawDailyCard(input) {
+  const date = normalizeEventDate(input?.date, 'Дата карты дня') || todayIso();
+  const existing = dailyCardDetail(date);
+  if (existing.card) return existing;
+
+  const card = db.prepare('SELECT * FROM cards ORDER BY RANDOM() LIMIT 1').get();
+  if (!card) throw httpError('В справочнике нет карт', 500);
+
+  const orientation = DAILY_ORIENTATIONS[Math.floor(Math.random() * DAILY_ORIENTATIONS.length)];
+
+  try {
+    db.prepare(`
+      INSERT INTO daily_cards (draw_date, card_id, orientation)
+      VALUES (?, ?, ?)
+    `).run(date, card.id, orientation);
+  } catch (error) {
+    // Если параллельный запрос уже вытянул карту на эту дату, показываем её.
+    if (!dailyCardDetail(date).card) throw error;
+  }
+
+  return dailyCardDetail(date);
+}
+
 function insertReadingVersion(readingId, kind, interpretation, summary, comment) {
   const body = interpretation || null;
   const summaryText = summary || null;
@@ -1033,6 +1079,15 @@ const routes = [
   ['GET', /^\/api\/backups$/, () => listBackups()],
 
   ['POST', /^\/api\/backup$/, () => createBackup()],
+
+  ['GET', /^\/api\/daily-card$/, (req, url) => {
+    const date = normalizeEventDate(url.searchParams.get('date'), 'Дата карты дня') || todayIso();
+    return dailyCardDetail(date);
+  }],
+
+  ['POST', /^\/api\/daily-card$/, async (req) => {
+    return drawDailyCard(await readJsonBody(req));
+  }],
 
   ['GET', /^\/api\/feedback$/, (req, url) => {
     const topic = url.searchParams.get('topic');

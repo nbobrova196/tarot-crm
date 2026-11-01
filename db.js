@@ -19,7 +19,7 @@ db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
 db.exec('PRAGMA busy_timeout = 5000');
 
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
 const schemaV1 = `
 CREATE TABLE IF NOT EXISTS cards (
@@ -364,6 +364,33 @@ if (currentVersion < 8) {
   db.exec('BEGIN');
   try {
     db.exec(schemaV8);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+// Версия 9: карта дня.
+// На каждую дату хранится одна карта и её положение. Запись создаётся
+// по кнопке «Вытянуть карту дня» и потом показывается весь день.
+const schemaV9 = `
+CREATE TABLE IF NOT EXISTS daily_cards (
+  id          INTEGER PRIMARY KEY,
+  draw_date   TEXT NOT NULL UNIQUE,
+  card_id     INTEGER NOT NULL REFERENCES cards(id),
+  orientation TEXT NOT NULL DEFAULT 'upright'
+              CHECK (orientation IN ('upright', 'reversed')),
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_cards_date ON daily_cards(draw_date DESC);
+`;
+
+if (currentVersion < 9) {
+  db.exec('BEGIN');
+  try {
+    db.exec(schemaV9);
     db.exec('COMMIT');
   } catch (error) {
     db.exec('ROLLBACK');

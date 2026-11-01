@@ -642,46 +642,145 @@ async function loadBackupStatus() {
   try {
     const data = await api('/api/backups');
     const latest = data.backups?.[0];
-    node.textContent = latest
-      ? `Последняя копия: ${formatDateTime(latest.created_at)} · ${latest.file} · ${formatBytes(latest.size)}`
-      : 'Резервных копий пока нет. Создайте первую перед важными изменениями.';
+    node.textContent = latest ? `копия: ${formatDateTime(latest.created_at)}` : 'копий пока нет';
+    node.title = latest ? `${latest.file} · ${formatBytes(latest.size)}` : 'Резервных копий пока нет';
   } catch {
-    node.textContent = 'Не удалось проверить резервные копии.';
+    node.textContent = 'не удалось проверить копии';
+    node.title = '';
   }
 }
 
 async function makeBackup() {
   const button = document.getElementById('backup-now');
   const status = document.getElementById('backup-status');
+  const label = document.getElementById('backup-label');
   if (!button || button.disabled) return;
 
   button.disabled = true;
-  if (status) status.textContent = 'Создаю резервную копию…';
+  if (label) label.textContent = 'Создаю копию…';
+  if (status) status.textContent = 'сохраняю базу…';
 
   try {
     const backup = await api('/api/backup', { method: 'POST' });
+    if (label) label.textContent = 'Резервная копия';
     if (status) {
-      status.textContent = `Копия сохранена: ${backup.file} · ${formatBytes(backup.size)}`;
+      status.textContent = `копия: ${formatDateTime(backup.created_at)}`;
+      status.title = `${backup.file} · ${formatBytes(backup.size)}`;
     }
   } catch (error) {
-    if (status) status.textContent = `Не удалось создать копию: ${error.message}`;
+    if (label) label.textContent = 'Резервная копия';
+    if (status) {
+      status.textContent = 'не удалось создать копию';
+      status.title = error.message;
+    }
   } finally {
     button.disabled = false;
   }
+}
+
+function setupBackup() {
+  const button = document.getElementById('backup-now');
+  if (!button) return;
+  button.addEventListener('click', makeBackup);
+  loadBackupStatus();
+}
+
+function dailyCardMarkup(data) {
+  if (!data.card) {
+    return `
+      <div class="daily-card-empty">
+        <p class="muted">Карта дня ещё не вытянута. Это не расклад — просто карта-настройка на сегодня.</p>
+        <button class="btn btn-primary" type="button" id="daily-card-draw">Вытянуть карту дня</button>
+      </div>
+    `;
+  }
+
+  const card = data.card;
+  const reversed = data.orientation === 'reversed';
+  const meaning = reversed ? card.reversed : card.upright;
+
+  return `
+    <div class="daily-card">
+      <a class="daily-card-image${reversed ? ' is-reversed' : ''}" href="#/cards/${card.id}">
+        <img src="${escapeHtml(card.image || 'cards/placeholder.svg')}" alt="${escapeHtml(card.name_ru)}"
+             onerror="this.onerror=null;this.src='cards/placeholder.svg'">
+      </a>
+      <div class="daily-card-body">
+        <div class="daily-card-head">
+          <div>
+            <div class="daily-card-name"><a href="#/cards/${card.id}">${escapeHtml(card.name_ru)}</a></div>
+            <div class="muted daily-card-en">${escapeHtml(card.name_en)}</div>
+          </div>
+          <span class="daily-card-orientation${reversed ? ' is-reversed' : ''}">${reversed ? 'перевёрнутая' : 'прямая'}</span>
+        </div>
+        <p class="daily-card-meaning">${escapeHtml(meaning || 'Значение для этого положения пока не заполнено.')}</p>
+        ${card.keywords?.length
+          ? `<div class="daily-card-keywords">${card.keywords.map((keyword) => `<span>${escapeHtml(keyword)}</span>`).join('')}</div>`
+          : ''}
+        <div class="daily-card-actions">
+          <a class="btn btn-small" href="#/journal/new?card=${card.id}&date=${data.date}">Записать в дневник</a>
+          <a class="btn btn-small" href="#/cards/${card.id}">Открыть карту</a>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function loadDailyCard() {
+  const host = document.getElementById('daily-card');
+  if (!host) return;
+
+  try {
+    const data = await api(`/api/daily-card?date=${todayIso()}`);
+    host.innerHTML = dailyCardMarkup(data);
+  } catch (error) {
+    host.innerHTML = `<p class="muted">Не удалось загрузить карту дня: ${escapeHtml(error.message)}</p>`;
+  }
+}
+
+function setupDailyCard() {
+  const host = document.getElementById('daily-card');
+  if (!host) return;
+
+  host.addEventListener('click', async (event) => {
+    const button = event.target.closest('#daily-card-draw');
+    if (!button || button.disabled) return;
+
+    button.disabled = true;
+    button.textContent = 'Тянем карту…';
+
+    try {
+      const data = await api('/api/daily-card', {
+        method: 'POST',
+        body: JSON.stringify({ date: todayIso() }),
+      });
+      host.innerHTML = dailyCardMarkup(data);
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = 'Вытянуть карту дня';
+      alert(error.message);
+    }
+  });
 }
 
 async function renderOverview() {
   viewEl.innerHTML = `
     <div class="stats">${TILES.map(statTile).join('')}</div>
 
+    <div class="panel daily-card-panel">
+      <div class="panel-head">
+        <h2>Карта дня</h2>
+        <a class="panel-link" href="#/journal">дневник →</a>
+      </div>
+      <div id="daily-card"><p class="muted">Загрузка…</p></div>
+    </div>
+
     <div id="overview-calendar" class="overview-calendar"><p class="muted">Загрузка…</p></div>
 
     <div class="quick-actions">
       <a class="btn btn-primary" href="#/events/new">+ Создать событие</a>
       <a class="btn" href="#/readings/new">+ Создать расклад</a>
-      <button class="btn" type="button" id="backup-now">Создать резервную копию</button>
     </div>
-    <p class="backup-status muted" id="backup-status">Проверяю резервные копии…</p>
 
     <div class="panel" id="pending-outcomes-panel">
       <div class="panel-head">
@@ -716,8 +815,8 @@ async function renderOverview() {
     </div>
   `;
 
-  document.getElementById('backup-now')?.addEventListener('click', makeBackup);
-  loadBackupStatus();
+  setupDailyCard();
+  loadDailyCard();
 
   try {
     const [statsResponse, readingsResponse, journalResponse, pendingResponse, eventsResponse] = await Promise.all([
@@ -5904,6 +6003,7 @@ async function checkServer() {
 }
 
 setupFeedback();
+setupBackup();
 
 window.addEventListener('hashchange', route);
 route();
