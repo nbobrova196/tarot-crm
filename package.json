@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Рабочее место таролога: расклады, база знаний по картам, клиенты и журнал",
+  "author": "Боброва Надежда Сергеевна (г. Екатеринбург)",
   "repository": "https://github.com/USERNAME/tarot-crm",
   "license": "MIT",
   "scripts": {
