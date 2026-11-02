@@ -3,7 +3,7 @@
 
 import http from 'node:http';
 import { spawn } from 'node:child_process';
-import { createReadStream, existsSync, mkdirSync } from 'node:fs';
+import { createReadStream, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +14,10 @@ const rootDir = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(rootDir, 'public');
 const backupDir = path.join(path.dirname(dbFile), 'backups');
 const firstPort = Number(process.env.PORT ?? 3000);
+
+// Версия и адрес репозитория нужны интерфейсу: по ним строится ссылка
+// на GitHub Issues для публичных отзывов.
+const pkg = JSON.parse(readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -1082,6 +1086,8 @@ const routes = [
   ['GET', /^\/api\/health$/, () => ({
     ok: true,
     schemaVersion: SCHEMA_VERSION,
+    version: pkg.version,
+    repository: typeof pkg.repository === 'string' ? pkg.repository : null,
     dbFile,
     uptime: Math.round(process.uptime()),
   })],

@@ -67,6 +67,13 @@ for (const name of names) {
   }
 }
 
+if (String(pkg.repository ?? '').includes('USERNAME')) {
+  console.warn(
+    'Внимание: в package.json не заменён USERNAME. '
+    + 'Кнопки «Сообщить о проблеме» и «Предложить идею» в приложении будут скрыты.',
+  );
+}
+
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, { stdio: 'inherit', ...options });
   if (result.error) throw result.error;

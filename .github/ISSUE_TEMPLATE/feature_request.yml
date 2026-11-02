@@ -1,0 +1,28 @@
+name: Предложение
+description: Идея, которой не хватает в приложении
+title: "[Идея] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо за идею! Опишите, какую задачу она решает — так проще понять,
+        насколько она важна.
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: Что хочется добавить
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Зачем это нужно
+      description: Какую задачу вы решаете и как справляетесь сейчас?
+
+  - type: input
+    id: version
+    attributes:
+      label: Версия приложения
+      placeholder: "0.1.0"

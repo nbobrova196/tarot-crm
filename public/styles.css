@@ -3848,6 +3848,27 @@ input[type="date"] {
   padding: 8px;
 }
 
+.feedback-external {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+.feedback-external p {
+  margin: 6px 0 0;
+  max-width: 56ch;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.feedback-external-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .feedback-row {
   padding: 16px;
 }

@@ -6022,6 +6022,11 @@ async function renderFeedbackList() {
     return;
   }
 
+  const health = await fetch('/api/health')
+    .then((response) => (response.ok ? response.json() : null))
+    .catch(() => null);
+  const issueLinks = feedbackIssueLinks(health);
+
   const rows = messages.map((item) => `
     <div class="feedback-row">
       <div class="feedback-row-head">
@@ -6038,6 +6043,19 @@ async function renderFeedbackList() {
 
   viewEl.innerHTML = `
     <a class="back-link" href="#/">← на главную</a>
+    ${issueLinks ? `
+      <div class="panel feedback-external">
+        <div>
+          <strong>Разработчик не видит сообщения из этого списка</strong>
+          <p class="muted">Они сохраняются только в вашей базе. Чтобы сообщить о проблеме
+            или предложить идею публично, напишите на GitHub.</p>
+        </div>
+        <div class="feedback-external-actions">
+          <a class="btn" href="${escapeHtml(issueLinks.bug)}" target="_blank" rel="noopener">Сообщить о проблеме</a>
+          <a class="btn" href="${escapeHtml(issueLinks.idea)}" target="_blank" rel="noopener">Предложить идею</a>
+        </div>
+      </div>
+    ` : ''}
     <div class="cards-toolbar">
       <p class="muted">Всего сообщений: ${messages.length}. Новые сверху.</p>
       <button class="btn btn-primary" type="button" id="feedback-new">Написать сообщение</button>
@@ -6048,6 +6066,31 @@ async function renderFeedbackList() {
   `;
 
   document.getElementById('feedback-new')?.addEventListener('click', openFeedbackDialog);
+}
+
+// Ссылки на GitHub Issues с уже заполненным окружением. Пока адрес
+// репозитория не заменён в package.json, кнопки не показываются.
+function feedbackIssueLinks(health) {
+  const repository = String(health?.repository ?? '')
+    .replace(/\.git$/, '')
+    .replace(/\/+$/, '');
+  if (!repository || repository.includes('USERNAME')) return null;
+
+  const environment = [
+    `- Версия: ${health.version ?? 'неизвестно'}`,
+    `- Схема базы: ${health.schemaVersion ?? 'неизвестно'}`,
+    `- Браузер: ${navigator.userAgent}`,
+  ].join('\n');
+
+  const bugBody = `### Что случилось\n\n\n### Как повторить\n\n1. \n2. \n\n### Окружение\n${environment}\n`;
+  const ideaBody = `### Что хочется добавить\n\n\n### Зачем это нужно\n\n\n### Окружение\n${environment}\n`;
+
+  const make = (title, body) => `${repository}/issues/new?title=${encodeURIComponent(title)}&body=${encodeURIComponent(body)}`;
+
+  return {
+    bug: make('[Баг] ', bugBody),
+    idea: make('[Идея] ', ideaBody),
+  };
 }
 
 /* ---------- Маршрутизация ---------- */

@@ -1,0 +1,48 @@
+name: Сообщение об ошибке
+description: Что-то работает не так, как ожидалось
+title: "[Баг] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо за отчёт! Чем больше деталей, тем быстрее получится разобраться.
+        Перед отправкой проверьте, что в тексте нет личных данных клиентов.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: Что случилось
+      description: Опишите проблему и что вы ожидали увидеть.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Как повторить
+      placeholder: |
+        1. Открыть раздел…
+        2. Нажать…
+        3. Увидеть…
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Версия приложения
+      description: Видна в боковом меню под именем разработчика.
+      placeholder: "0.1.0"
+
+  - type: input
+    id: environment
+    attributes:
+      label: Система и браузер
+      placeholder: "macOS 15, Safari 18 / Windows 11, Chrome"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Текст из чёрного окна
+      description: Если запускали через ярлык, скопируйте вывод терминала.
+      render: shell
