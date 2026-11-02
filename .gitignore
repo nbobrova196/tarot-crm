@@ -7,6 +7,10 @@ data/backups/
 # Системный мусор
 .DS_Store
 
+# Собранные архивы и скачанные бинарники Node
+dist/
+.cache/
+
 # Зависимостей нет, но на всякий случай
 node_modules/
 npm-debug.log*

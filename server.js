@@ -2,6 +2,7 @@
 // Новые разделы добавляются в массив routes.
 
 import http from 'node:http';
+import { spawn } from 'node:child_process';
 import { createReadStream, existsSync, mkdirSync } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
@@ -12,7 +13,7 @@ import { seedCards } from './seed.js';
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(rootDir, 'public');
 const backupDir = path.join(path.dirname(dbFile), 'backups');
-const port = Number(process.env.PORT ?? 3000);
+const firstPort = Number(process.env.PORT ?? 3000);
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -1925,7 +1926,46 @@ if (seeded.inserted > 0) {
   console.log(`Справочник карт загружен: ${seeded.inserted} карт`);
 }
 
-server.listen(port, '127.0.0.1', () => {
-  console.log(`Таро-мастерская запущена: http://localhost:${port}`);
+// Если порт занят, пробуем следующие — так приложение запустится даже
+// когда 3000 уже занят другим процессом.
+let listenPort = Number.isInteger(firstPort) && firstPort > 0 ? firstPort : 3000;
+let portAttempts = 0;
+
+function openBrowser(url) {
+  const [command, args] = process.platform === 'darwin'
+    ? ['open', [url]]
+    : process.platform === 'win32'
+      ? ['cmd', ['/c', 'start', '', url]]
+      : ['xdg-open', [url]];
+
+  try {
+    const child = spawn(command, args, { detached: true, stdio: 'ignore' });
+    child.on('error', () => {});
+    child.unref();
+  } catch {
+    // Браузер не открылся — адрес всё равно напечатан ниже.
+  }
+}
+
+function onListening() {
+  const actualPort = server.address().port;
+  console.log(`Таро-мастерская запущена: http://localhost:${actualPort}`);
   console.log(`База данных: ${dbFile}`);
+  if (process.env.TAROT_OPEN === '1') {
+    openBrowser(`http://localhost:${actualPort}`);
+  }
+}
+
+server.on('error', (error) => {
+  if (error.code === 'EADDRINUSE' && portAttempts < 20) {
+    portAttempts += 1;
+    listenPort += 1;
+    server.listen(listenPort, '127.0.0.1');
+    return;
+  }
+  console.error('Не удалось запустить сервер:', error.message);
+  process.exit(1);
 });
+
+server.on('listening', onListening);
+server.listen(listenPort, '127.0.0.1');

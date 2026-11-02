@@ -6,6 +6,7 @@
   "description": "Рабочее место таролога: расклады, база знаний по картам, клиенты и журнал",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "build:release": "node scripts/build-release.mjs"
   }
 }
