@@ -68,10 +68,24 @@ for (const name of names) {
 }
 
 if (String(pkg.repository ?? '').includes('USERNAME')) {
-  console.warn(
-    'Внимание: в package.json не заменён USERNAME. '
-    + 'Кнопки «Сообщить о проблеме» и «Предложить идею» в приложении будут скрыты.',
-  );
+  const remote = spawnSync('git', ['remote', 'get-url', 'origin'], {
+    cwd: rootDir,
+    encoding: 'utf8',
+  });
+  const remoteUrl = remote.status === 0
+    ? remote.stdout.trim()
+      .replace(/^git@github\.com:/, 'https://github.com/')
+      .replace(/\.git$/, '')
+    : '';
+  if (remoteUrl.startsWith('https://github.com/')) {
+    pkg.repository = remoteUrl;
+  } else {
+    console.warn(
+      'Внимание: в package.json не заменён USERNAME. '
+      + 'Кнопки «Сообщить о проблеме» и «Предложить идею» в приложении будут скрыты. '
+      + 'Укажите адрес репозитория в package.json или добавьте git remote origin.',
+    );
+  }
 }
 
 function run(command, args, options = {}) {
@@ -186,7 +200,7 @@ for (const name of names) {
   await rm(stageRoot, { recursive: true, force: true });
   await mkdir(appDir, { recursive: true });
 
-  const appFiles = ['server.js', 'db.js', 'seed.js', 'package.json', 'README.md', 'РУКОВОДСТВО.md'];
+  const appFiles = ['server.js', 'db.js', 'seed.js', 'README.md', 'РУКОВОДСТВО.md'];
   if (existsSync(path.join(rootDir, 'LICENSE'))) appFiles.push('LICENSE');
 
   for (const file of appFiles) {
@@ -195,6 +209,12 @@ for (const name of names) {
   for (const dir of ['public', 'seed', 'docs']) {
     await cp(path.join(rootDir, dir), path.join(appDir, dir), { recursive: true });
   }
+
+  // package.json кладём отдельно: в релиз попадает актуальный адрес репозитория.
+  await writeFile(
+    path.join(appDir, 'package.json'),
+    `${JSON.stringify(pkg, null, 2)}\n`,
+  );
 
   const nodeBinaryName = target.binary === 'node.exe' ? 'node.exe' : 'node';
   const nodeBinary = path.join(unpacked, target.binary);
