@@ -23,6 +23,9 @@ git log --oneline -1
 
 ## 1. Создайте пустой репозиторий на GitHub
 
+**Если будете использовать GitHub Desktop** (вариант А ниже), этот раздел можно
+пропустить: программа сама создаст репозиторий на GitHub кнопкой **Publish repository**.
+
 1. Войдите на github.com.
 2. Нажмите **New repository**.
 3. Введите имя, например `tarot-crm`.
@@ -33,9 +36,33 @@ git log --oneline -1
 
 ## 2. Подключите удалённый репозиторий
 
-Скопируйте адрес репозитория со страницы GitHub. Дальше выберите один вариант.
+Все настройки ниже — в **личном аккаунте**, а не в настройках репозитория.
+Открыть их можно через аватар в правом верхнем углу → **Settings**.
 
-### Вариант А. SSH (удобно, если ключ уже настроен)
+### Вариант А. GitHub Desktop — без терминала (самый простой)
+
+1. Установите GitHub Desktop: https://desktop.github.com
+2. Войдите в свой аккаунт GitHub.
+3. **File → Add local repository** → выберите папку `tarot-crm`.
+4. Нажмите **Publish repository**.
+   - Имя: `tarot-crm`.
+   - Снимите галочку **Keep this code private**, если репозиторий должен быть публичным.
+5. Код появится на GitHub. Дальше релиз с архивами оформляется на сайте.
+
+Если пустой репозиторий уже создан на сайте, откройте в GitHub Desktop
+**Repository → Repository settings → Remote** и укажите его адрес.
+
+### Вариант Б. HTTPS (терминал, без SSH-ключей)
+
+```bash
+git remote add origin https://github.com/USERNAME/tarot-crm.git
+```
+
+При первом `push` Git попросит логин и пароль. Вместо пароля нужен **personal access
+token**: откройте https://github.com/settings/tokens → **Generate new token (classic)**
+→ права `repo`.
+
+### Вариант В. SSH (если ключ уже настроен)
 
 ```bash
 git remote add origin git@github.com:USERNAME/tarot-crm.git
@@ -54,20 +81,21 @@ ssh-keygen -t ed25519 -C "you@example.com"
 pbcopy < ~/.ssh/id_ed25519.pub
 ```
 
-Затем на GitHub: **Settings → SSH and GPG keys → New SSH key**, вставьте содержимое
-из буфера обмена.
+Затем на GitHub: аватар → **Settings** → в левом меню раздел **Access** →
+**SSH and GPG keys** → **New SSH key**. Вставьте содержимое буфера обмена.
 
-### Вариант Б. HTTPS (проще, но нужен токен)
+Прямая ссылка: https://github.com/settings/keys
 
-```bash
-git remote add origin https://github.com/USERNAME/tarot-crm.git
-```
-
-При первом `push` Git попросит логин и пароль. Вместо пароля нужен **personal access
-token**: GitHub → **Settings → Developer settings → Personal access tokens → Tokens
-(classic)** → **Generate new token**, права `repo`.
+Если раздела не видно, проверьте, что вы в личных настройках (аватар → Settings),
+а не в настройках репозитория. Настройки репозитория — это вкладка **Settings**
+внутри самого репозитория, SSH-ключей там нет.
 
 ## 3. Отправьте первый коммит
+
+**Если выбрали GitHub Desktop**, этот шаг уже выполнен кнопкой **Publish repository** —
+переходите к разделу 4.
+
+**Если выбрали HTTPS или SSH**, выполните в терминале:
 
 ```bash
 git push -u origin main
@@ -82,11 +110,15 @@ git remote -v
 git status
 ```
 
-На GitHub должны появиться файлы проекта, но **не** `data/tarot.db`.
+На GitHub должны появиться файлы проекта, но **не** `data/tarot.db`. Откройте страницу
+репозитория в браузере и убедитесь, что видите `README.md`, `server.js` и папку `public`.
 
 ## 5. Дальнейшая работа
 
-После изменений в коде:
+**В GitHub Desktop**: изменения появятся на вкладке **Changes** → впишите описание
+→ **Commit to main** → **Push origin**.
+
+**В терминале**, после изменений в коде:
 
 ```bash
 git add -A
