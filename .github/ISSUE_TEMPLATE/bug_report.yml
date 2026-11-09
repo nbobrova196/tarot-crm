@@ -32,7 +32,7 @@ body:
     attributes:
       label: Версия приложения
       description: Видна в боковом меню под именем разработчика.
-      placeholder: "0.1.0"
+      placeholder: "0.1.1"
 
   - type: input
     id: environment

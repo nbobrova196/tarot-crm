@@ -1088,6 +1088,7 @@ const routes = [
     schemaVersion: SCHEMA_VERSION,
     version: pkg.version,
     repository: typeof pkg.repository === 'string' ? pkg.repository : null,
+    feedbackEmail: typeof pkg.feedbackEmail === 'string' ? pkg.feedbackEmail : null,
     dbFile,
     uptime: Math.round(process.uptime()),
   })],

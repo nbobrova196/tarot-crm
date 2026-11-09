@@ -70,7 +70,7 @@
       <div class="feedback-head">
         <div>
           <h2 id="feedback-title">Сообщение разработчику</h2>
-          <p class="muted feedback-sub">Баг, неточность или идея — сообщение сохранится в базе.</p>
+          <p class="muted feedback-sub">Баг, неточность или идея. Сообщение сохранится у вас в базе, а отправить его можно на почту или на GitHub.</p>
         </div>
         <button class="icon-btn" type="button" id="feedback-close" aria-label="Закрыть">×</button>
       </div>
@@ -94,9 +94,11 @@
       <p class="form-ok" id="feedback-ok" hidden>Сообщение сохранено. Спасибо!</p>
 
       <div class="form-actions">
-        <button class="btn btn-primary" type="submit">Отправить</button>
+        <button class="btn btn-primary" type="submit">Сохранить</button>
+        <button class="btn" type="button" id="feedback-mail" hidden>Отправить на почту</button>
         <button class="btn" type="button" id="feedback-cancel">Отмена</button>
       </div>
+      <p class="field-hint muted">«Сохранить» оставляет сообщение только у вас. Чтобы разработчик его увидел, нажмите «Отправить на почту» или создайте issue на GitHub.</p>
       <p class="feedback-view-all"><a href="#/feedback" id="feedback-view-all">Сохранённые сообщения →</a></p>
     </form>
   </dialog>

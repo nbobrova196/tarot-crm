@@ -5906,6 +5906,48 @@ function renderStub(section) {
 
 /* ---------- Обратная связь ---------- */
 
+let healthCache = null;
+
+async function getHealth() {
+  if (healthCache) return healthCache;
+  try {
+    const response = await fetch('/api/health');
+    if (response.ok) healthCache = await response.json();
+  } catch {
+    // Сервер не ответил — останемся без данных об окружении.
+  }
+  return healthCache;
+}
+
+const FEEDBACK_TOPIC_SUBJECTS = {
+  bug: '[Таро] Баг',
+  inaccuracy: '[Таро] Неточность',
+  suggestion: '[Таро] Предложение',
+  other: '[Таро] Сообщение',
+};
+
+// Письмо не отправляется само: открывается почтовая программа с готовым
+// текстом, и человек нажимает «Отправить» уже там.
+function feedbackMailto(health, { topic = 'other', message = '', page = '', pageTitle = '' } = {}) {
+  const email = String(health?.feedbackEmail ?? '').trim();
+  if (!email) return null;
+
+  const lines = [];
+  if (message.trim()) lines.push(message.trim(), '');
+  lines.push(
+    '---',
+    `Версия: ${health?.version ?? 'неизвестно'}`,
+    `Схема базы: ${health?.schemaVersion ?? 'неизвестно'}`,
+    `Браузер: ${navigator.userAgent}`,
+  );
+  if (page) lines.push(`Страница: ${page}`);
+  if (pageTitle) lines.push(`Заголовок: ${pageTitle}`);
+
+  const subject = FEEDBACK_TOPIC_SUBJECTS[topic] ?? FEEDBACK_TOPIC_SUBJECTS.other;
+  const body = lines.join('\n').replace(/\n/g, '\r\n');
+  return `mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+}
+
 function openFeedbackDialog() {
   const dialog = document.getElementById('feedback-dialog');
   const form = document.getElementById('feedback-form');
@@ -5919,13 +5961,19 @@ function openFeedbackDialog() {
   const okEl = document.getElementById('feedback-ok');
   const submit = form.querySelector('button[type="submit"]');
   const pageHint = document.getElementById('feedback-page-hint');
+  const mailButton = document.getElementById('feedback-mail');
 
   if (errorEl) errorEl.textContent = '';
   if (okEl) okEl.hidden = true;
   if (submit) submit.disabled = false;
+  if (mailButton) mailButton.hidden = true;
   if (pageHint) {
     pageHint.textContent = `Страница: ${location.hash || '#/'} · ${document.title}`;
   }
+
+  getHealth().then((health) => {
+    if (mailButton) mailButton.hidden = !feedbackMailto(health, { topic: 'other' });
+  });
 
   if (typeof dialog.showModal === 'function') {
     if (!dialog.open) dialog.showModal();
@@ -5955,6 +6003,34 @@ function setupFeedback() {
   document.getElementById('feedback-view-all')?.addEventListener('click', () => {
     closeDialog();
     location.hash = '#/feedback';
+  });
+
+  const mailButton = document.getElementById('feedback-mail');
+  mailButton?.addEventListener('click', async () => {
+    const errorEl = document.getElementById('feedback-error');
+    const message = form.elements.message.value.trim();
+    if (errorEl) errorEl.textContent = '';
+
+    if (!message) {
+      if (errorEl) errorEl.textContent = 'Опишите, что случилось или что хочется улучшить.';
+      form.elements.message.focus();
+      return;
+    }
+
+    const health = await getHealth();
+    const link = feedbackMailto(health, {
+      topic: form.elements.topic.value,
+      message,
+      page: location.hash || '#/',
+      pageTitle: document.title,
+    });
+
+    if (!link) {
+      if (errorEl) errorEl.textContent = 'Почта для обратной связи не настроена. Напишите, пожалуйста, через GitHub.';
+      return;
+    }
+
+    window.location.href = link;
   });
 
   dialog.addEventListener('click', (event) => {
@@ -6022,10 +6098,9 @@ async function renderFeedbackList() {
     return;
   }
 
-  const health = await fetch('/api/health')
-    .then((response) => (response.ok ? response.json() : null))
-    .catch(() => null);
+  const health = await getHealth();
   const issueLinks = feedbackIssueLinks(health);
+  const mailLink = feedbackMailto(health, { topic: 'other' });
 
   const rows = messages.map((item) => `
     <div class="feedback-row">
@@ -6043,16 +6118,17 @@ async function renderFeedbackList() {
 
   viewEl.innerHTML = `
     <a class="back-link" href="#/">← на главную</a>
-    ${issueLinks ? `
+    ${(issueLinks || mailLink) ? `
       <div class="panel feedback-external">
         <div>
           <strong>Разработчик не видит сообщения из этого списка</strong>
           <p class="muted">Они сохраняются только в вашей базе. Чтобы сообщить о проблеме
-            или предложить идею публично, напишите на GitHub.</p>
+            или предложить идею, отправьте сообщение на почту или напишите на GitHub.</p>
         </div>
         <div class="feedback-external-actions">
-          <a class="btn" href="${escapeHtml(issueLinks.bug)}" target="_blank" rel="noopener">Сообщить о проблеме</a>
-          <a class="btn" href="${escapeHtml(issueLinks.idea)}" target="_blank" rel="noopener">Предложить идею</a>
+          ${mailLink ? `<a class="btn" href="${escapeHtml(mailLink)}">Написать на почту</a>` : ''}
+          ${issueLinks ? `<a class="btn" href="${escapeHtml(issueLinks.bug)}" target="_blank" rel="noopener">Сообщить о проблеме</a>` : ''}
+          ${issueLinks ? `<a class="btn" href="${escapeHtml(issueLinks.idea)}" target="_blank" rel="noopener">Предложить идею</a>` : ''}
         </div>
       </div>
     ` : ''}

@@ -1,11 +1,12 @@
 {
   "name": "tarot-crm",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "Рабочее место таролога: расклады, база знаний по картам, клиенты и журнал",
   "author": "Боброва Надежда Сергеевна (г. Екатеринбург)",
   "repository": "https://github.com/nbobrova196/tarot-crm",
+  "feedbackEmail": "tarot.feedback@mail.ru",
   "license": "MIT",
   "scripts": {
     "start": "node server.js",

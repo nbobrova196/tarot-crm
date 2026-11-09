@@ -211,10 +211,10 @@ node scripts/build-release.mjs
 Получится:
 
 ```
-dist/Tarot-0.1.0-macOS-AppleSilicon.zip
-dist/Tarot-0.1.0-macOS-Intel.zip
-dist/Tarot-0.1.0-Windows.zip
-dist/Tarot-0.1.0-Linux.zip      # если собирали linux-x64
+dist/Tarot-0.1.1-macOS-AppleSilicon.zip
+dist/Tarot-0.1.1-macOS-Intel.zip
+dist/Tarot-0.1.1-Windows.zip
+dist/Tarot-0.1.1-Linux.zip      # если собирали linux-x64
 dist/SHA256SUMS.txt
 ```
 
@@ -230,19 +230,19 @@ dist/SHA256SUMS.txt
 ### 3. Создайте тег
 
 ```bash
-git tag -a v0.1.0 -m "Таро v0.1"
-git push origin v0.1.0
+git tag -a v0.1.1 -m "Таро v0.1.1"
+git push origin v0.1.1
 ```
 
 ### 4. Прикрепите архивы к релизу
 
-Через сайт GitHub: **Releases → Draft a new release** → выберите тег `v0.1.0`,
+Через сайт GitHub: **Releases → Draft a new release** → выберите тег `v0.1.1`,
 заголовок «Таро v0.1», опишите изменения и перетащите файлы из `dist/`.
 
 Через GitHub CLI:
 
 ```bash
-gh release create v0.1.0 dist/*.zip dist/SHA256SUMS.txt \
+gh release create v0.1.1 dist/*.zip dist/SHA256SUMS.txt \
   --title "Таро v0.1" \
   --notes "Первый публичный выпуск. Скачайте архив для своей системы и распакуйте его."
 ```
