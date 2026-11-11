@@ -685,6 +685,135 @@ function setupBackup() {
   if (!button) return;
   button.addEventListener('click', makeBackup);
   loadBackupStatus();
+
+  document.getElementById('backup-restore')?.addEventListener('click', openRestoreDialog);
+  document.getElementById('restore-close')?.addEventListener('click', closeRestoreDialog);
+  document.getElementById('restore-cancel')?.addEventListener('click', closeRestoreDialog);
+}
+
+function closeRestoreDialog() {
+  const dialog = document.getElementById('restore-dialog');
+  if (!dialog) return;
+  if (typeof dialog.close === 'function') dialog.close();
+  else dialog.removeAttribute('open');
+}
+
+function openRestoreDialog() {
+  const dialog = document.getElementById('restore-dialog');
+  if (!dialog) return;
+
+  const body = document.getElementById('restore-body');
+  if (body) body.innerHTML = '<p class="muted">Загрузка копий…</p>';
+
+  if (typeof dialog.showModal === 'function') {
+    if (!dialog.open) dialog.showModal();
+  } else {
+    dialog.setAttribute('open', '');
+  }
+
+  loadRestoreList();
+}
+
+async function loadRestoreList() {
+  const body = document.getElementById('restore-body');
+  if (!body) return;
+
+  let data;
+  try {
+    data = await api('/api/backups');
+  } catch (error) {
+    body.innerHTML = `<p class="form-error">Не удалось получить список копий: ${escapeHtml(error.message)}</p>`;
+    return;
+  }
+
+  const backups = data.backups ?? [];
+  if (backups.length === 0) {
+    body.innerHTML = `
+      <p class="muted">Резервных копий пока нет. Нажмите «Резервная копия» в боковом меню —
+        и через секунду здесь появится первая копия.</p>
+    `;
+    return;
+  }
+
+  const rows = backups.map((backup) => `
+    <div class="restore-row">
+      <div>
+        <strong>${escapeHtml(formatDateTime(backup.created_at))}</strong>
+        <div class="muted">${escapeHtml(backup.name)} · ${escapeHtml(formatBytes(backup.size))}</div>
+      </div>
+      <button class="btn" type="button" data-restore="${escapeHtml(backup.name)}">Восстановить</button>
+    </div>
+  `).join('');
+
+  body.innerHTML = `
+    <div class="restore-list">${rows}</div>
+    <p class="field-hint muted">Новые копии сверху. При восстановлении текущая база сначала
+      сохранится в новую копию, поэтому ошибиться не страшно.</p>
+  `;
+
+  body.querySelectorAll('[data-restore]').forEach((button) => {
+    button.addEventListener('click', () => restoreFromBackup(button.dataset.restore, button));
+  });
+}
+
+async function waitForServer(timeoutMs = 25000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    try {
+      const response = await fetch('/api/health', { cache: 'no-store' });
+      if (response.ok) return true;
+    } catch {
+      // сервер ещё перезапускается
+    }
+  }
+  return false;
+}
+
+async function restoreFromBackup(name, button) {
+  const body = document.getElementById('restore-body');
+  if (!body) return;
+
+  const confirmed = window.confirm(
+    `Восстановить базу из копии «${name}»?\n\n`
+    + 'Текущие данные будут заменены. Перед заменой приложение сохранит их '
+    + 'в новую резервную копию.',
+  );
+  if (!confirmed) return;
+
+  if (button) button.disabled = true;
+  body.innerHTML = '<p class="muted">Восстанавливаю базу…</p>';
+
+  let result;
+  try {
+    result = await api(`/api/backups/${encodeURIComponent(name)}/restore`, { method: 'POST' });
+  } catch (error) {
+    body.innerHTML = `
+      <p class="form-error">Не удалось восстановить копию: ${escapeHtml(error.message)}</p>
+      <p class="muted">Текущая база не изменена. Можно выбрать другую копию.</p>
+    `;
+    if (button) button.disabled = false;
+    return;
+  }
+
+  body.innerHTML = `
+    <p class="form-ok">База восстановлена из копии ${escapeHtml(result.restored)}.</p>
+    <p class="muted">Приложение перезапускается. Страница обновится сама через несколько секунд.</p>
+    <p class="field-hint muted">Если страница не обновилась, закройте окно и снова откройте
+      «Запустить Таро». Состояние до восстановления сохранено в копии
+      <code>${escapeHtml(result.safetyBackup)}</code>.</p>
+  `;
+
+  const restarted = await waitForServer();
+  if (restarted) {
+    location.reload();
+    return;
+  }
+
+  body.insertAdjacentHTML('beforeend', `
+    <p class="form-error">Приложение не перезапустилось автоматически. Закройте это окно
+      и снова откройте «Запустить Таро».</p>
+  `);
 }
 
 function dailyCardMarkup(data) {

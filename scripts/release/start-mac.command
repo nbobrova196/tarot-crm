@@ -9,8 +9,20 @@ echo
 
 chmod +x ./node 2>/dev/null
 
-TAROT_OPEN="${TAROT_OPEN:-1}" ./node server.js
-status=$?
+TAROT_OPEN="${TAROT_OPEN:-1}"
+while true; do
+  TAROT_OPEN="$TAROT_OPEN" ./node server.js
+  status=$?
+
+  if [ "$status" -eq 42 ]; then
+    echo
+    echo "Данные восстановлены. Перезапускаю Таро…"
+    TAROT_OPEN=0
+    continue
+  fi
+
+  break
+done
 
 echo
 if [ "$status" -ne 0 ]; then

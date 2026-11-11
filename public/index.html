@@ -51,7 +51,10 @@
             </svg>
             <span id="backup-label">Резервная копия</span>
           </button>
-          <div class="sidebar-backup-status" id="backup-status" aria-live="polite">проверяю копии…</div>
+          <div class="sidebar-backup-status">
+            <span id="backup-status" aria-live="polite">проверяю копии…</span>
+            <button class="sidebar-backup-restore" id="backup-restore" type="button">восстановить</button>
+          </div>
         </div>
       </div>
     </aside>
@@ -101,6 +104,24 @@
       <p class="field-hint muted">«Сохранить» оставляет сообщение только у вас. Чтобы разработчик его увидел, нажмите «Отправить на почту» или создайте issue на GitHub.</p>
       <p class="feedback-view-all"><a href="#/feedback" id="feedback-view-all">Сохранённые сообщения →</a></p>
     </form>
+  </dialog>
+
+  <dialog class="feedback-dialog" id="restore-dialog" aria-labelledby="restore-title">
+    <div class="feedback-form">
+      <div class="feedback-head">
+        <div>
+          <h2 id="restore-title">Восстановление из копии</h2>
+          <p class="muted feedback-sub">Текущая база будет заменена выбранной копией. Перед заменой приложение само сохранит текущие данные — отменить восстановление можно будет из новой копии.</p>
+        </div>
+        <button class="icon-btn" type="button" id="restore-close" aria-label="Закрыть">×</button>
+      </div>
+
+      <div id="restore-body"><p class="muted">Загрузка копий…</p></div>
+
+      <div class="form-actions">
+        <button class="btn" type="button" id="restore-cancel">Отмена</button>
+      </div>
+    </div>
   </dialog>
 
   <script type="module" src="app.js"></script>

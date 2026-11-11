@@ -3,10 +3,11 @@
 
 import http from 'node:http';
 import { spawn } from 'node:child_process';
-import { createReadStream, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { createReadStream, existsSync, mkdirSync, readFileSync, copyFileSync, rmSync } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
 import { SCHEMA_VERSION, db, dbFile, getStats } from './db.js';
 import { seedCards } from './seed.js';
 
@@ -1082,6 +1083,92 @@ async function listBackups() {
   };
 }
 
+const REQUIRED_TABLES = ['cards', 'clients', 'readings', 'journal', 'events'];
+
+// Проверяем копию до того, как что-то заменим: файл должен быть целой
+// базой SQLite с таблицами Таро и не быть новее этого приложения.
+function checkBackupFile(filePath) {
+  let candidate;
+  try {
+    candidate = new DatabaseSync(filePath, { readOnly: true });
+
+    const integrity = candidate.prepare('PRAGMA integrity_check').get();
+    const integrityValue = integrity ? Object.values(integrity)[0] : null;
+    if (String(integrityValue).toLowerCase() !== 'ok') {
+      throw new Error('проверка целостности не пройдена');
+    }
+
+    const tables = candidate
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+      .all()
+      .map((row) => row.name);
+    const missing = REQUIRED_TABLES.filter((table) => !tables.includes(table));
+    if (missing.length > 0) {
+      throw new Error(`в файле нет таблиц: ${missing.join(', ')}`);
+    }
+
+    const version = candidate.prepare('PRAGMA user_version').get()?.user_version ?? 0;
+    if (Number(version) > SCHEMA_VERSION) {
+      throw new Error('копия сделана в более новой версии приложения');
+    }
+  } finally {
+    candidate?.close();
+  }
+}
+
+async function restoreBackup(rawName) {
+  const name = path.basename(String(rawName ?? ''));
+  if (!/^[A-Za-z0-9._-]+\.db$/.test(name)) {
+    throw httpError('Неверное имя резервной копии', 400);
+  }
+
+  const source = path.join(backupDir, name);
+  if (!existsSync(source)) throw httpError('Резервная копия не найдена', 404);
+
+  try {
+    checkBackupFile(source);
+  } catch (error) {
+    throw httpError(`Копия повреждена или не подходит: ${error.message}`, 400);
+  }
+
+  // Сначала сохраняем текущее состояние, чтобы восстановление можно было
+  // отменить: копия появится в той же папке data/backups.
+  const safety = await createBackup();
+
+  try {
+    db.close();
+    copyFileSync(source, dbFile);
+    for (const suffix of ['-wal', '-shm']) {
+      try {
+        rmSync(`${dbFile}${suffix}`);
+      } catch {
+        // служебного файла может не быть — это нормально
+      }
+    }
+  } catch (error) {
+    console.error('[restore]', error);
+    setTimeout(() => process.exit(1), 500);
+    throw httpError('Не удалось заменить базу. Перезапустите приложение и попробуйте снова.', 500);
+  }
+
+  try {
+    server.close();
+  } catch {
+    // сервер уже мог быть остановлен
+  }
+
+  // Ярлыки запуска видят код 42 и перезапускают приложение автоматически,
+  // уже с восстановленной базой.
+  setTimeout(() => process.exit(42), 1500);
+
+  return {
+    ok: true,
+    restored: name,
+    safetyBackup: safety.name,
+    restart: true,
+  };
+}
+
 const routes = [
   ['GET', /^\/api\/health$/, () => ({
     ok: true,
@@ -1098,6 +1185,9 @@ const routes = [
   ['GET', /^\/api\/backups$/, () => listBackups()],
 
   ['POST', /^\/api\/backup$/, () => createBackup()],
+
+  ['POST', /^\/api\/backups\/([^/]+)\/restore$/, (req, url, match) =>
+    restoreBackup(decodeURIComponent(match[1]))],
 
   ['GET', /^\/api\/daily-card$/, (req, url) => {
     const date = normalizeEventDate(url.searchParams.get('date'), 'Дата карты дня') || todayIso();

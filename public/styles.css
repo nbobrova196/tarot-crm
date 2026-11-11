@@ -249,6 +249,57 @@ a:hover {
   line-height: 1.4;
 }
 
+.sidebar-backup-restore {
+  display: inline;
+  margin-left: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: rgba(167, 157, 181, 0.7);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.sidebar-backup-restore:hover,
+.sidebar-backup-restore:focus-visible {
+  color: var(--gold-soft);
+  outline: none;
+}
+
+.restore-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+.restore-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.restore-row strong {
+  display: block;
+  font-size: 13.5px;
+}
+
+.restore-row .muted {
+  font-size: 12px;
+}
+
+.restore-row .btn {
+  flex: none;
+}
+
 .status-dot {
   width: 7px;
   height: 7px;

@@ -200,7 +200,7 @@ for (const name of names) {
   await rm(stageRoot, { recursive: true, force: true });
   await mkdir(appDir, { recursive: true });
 
-  const appFiles = ['server.js', 'db.js', 'seed.js', 'README.md', 'РУКОВОДСТВО.md'];
+  const appFiles = ['server.js', 'db.js', 'seed.js', 'README.md', 'РУКОВОДСТВО.md', 'РУКОВОДСТВО.pdf'];
   if (existsSync(path.join(rootDir, 'LICENSE'))) appFiles.push('LICENSE');
 
   for (const file of appFiles) {
