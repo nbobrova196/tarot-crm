@@ -1019,6 +1019,118 @@ function getStatistics() {
   };
 }
 
+/* ---------- Статистика по месяцам ---------- */
+
+function monthKeys(count) {
+  const now = new Date();
+  const keys = [];
+  for (let offset = count - 1; offset >= 0; offset -= 1) {
+    const date = new Date(now.getFullYear(), now.getMonth() - offset, 1);
+    keys.push(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`);
+  }
+  return keys;
+}
+
+// Сравниваем две половины выбранного периода: так видно, какие темы
+// набирают силу, а какие встречаются реже.
+function getMonthlyStatistics(rawMonths) {
+  const monthsCount = Number(rawMonths) === 6 ? 6 : 12;
+  const months = monthKeys(monthsCount);
+  const from = months[0];
+  const to = months[months.length - 1];
+
+  const series = months.map((month) => ({ month, readings: 0, journal: 0 }));
+  const byMonth = new Map(series.map((item) => [item.month, item]));
+
+  for (const row of db.prepare(`
+    SELECT substr(reading_date, 1, 7) AS month, COUNT(*) AS n
+    FROM readings
+    WHERE substr(reading_date, 1, 7) BETWEEN ? AND ?
+    GROUP BY month
+  `).all(from, to)) {
+    const item = byMonth.get(row.month);
+    if (item) item.readings = row.n;
+  }
+
+  for (const row of db.prepare(`
+    SELECT substr(entry_date, 1, 7) AS month, COUNT(*) AS n
+    FROM journal
+    WHERE substr(entry_date, 1, 7) BETWEEN ? AND ?
+    GROUP BY month
+  `).all(from, to)) {
+    const item = byMonth.get(row.month);
+    if (item) item.journal = row.n;
+  }
+
+  const themeCounts = new Map();
+  for (const row of db.prepare(`
+    SELECT substr(r.reading_date, 1, 7) AS month, c.themes AS themes
+    FROM reading_cards rc
+    JOIN readings r ON r.id = rc.reading_id
+    JOIN cards c ON c.id = rc.card_id
+    WHERE substr(r.reading_date, 1, 7) BETWEEN ? AND ?
+  `).all(from, to)) {
+    const list = safeJson(row.themes);
+    if (!Array.isArray(list)) continue;
+
+    for (const rawTheme of list) {
+      const label = String(rawTheme ?? '').trim();
+      if (!label) continue;
+
+      const key = label.toLowerCase();
+      let item = themeCounts.get(key);
+      if (!item) {
+        item = { theme: label, byMonth: new Map() };
+        themeCounts.set(key, item);
+      }
+      item.byMonth.set(row.month, (item.byMonth.get(row.month) ?? 0) + 1);
+    }
+  }
+
+  const half = Math.floor(monthsCount / 2);
+  const previousMonths = months.slice(0, half);
+  const recentMonths = months.slice(half);
+  const sumMonths = (map, list) => list.reduce((total, month) => total + (map.get(month) ?? 0), 0);
+
+  const themes = [...themeCounts.values()]
+    .map((item) => {
+      const previous = sumMonths(item.byMonth, previousMonths);
+      const recent = sumMonths(item.byMonth, recentMonths);
+      return {
+        theme: item.theme,
+        previous,
+        recent,
+        total: previous + recent,
+        delta: recent - previous,
+      };
+    })
+    .filter((item) => item.total >= 2)
+    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta)
+      || b.total - a.total
+      || a.theme.localeCompare(b.theme, 'ru'))
+    .slice(0, 10)
+    .map((item) => ({
+      ...item,
+      direction: item.delta > 0 ? 'up' : item.delta < 0 ? 'down' : 'flat',
+    }));
+
+  const totals = series.reduce((acc, item) => {
+    acc.readings += item.readings;
+    acc.journal += item.journal;
+    return acc;
+  }, { readings: 0, journal: 0 });
+
+  return {
+    months: monthsCount,
+    from,
+    to,
+    series,
+    totals,
+    halves: { previous: previousMonths, recent: recentMonths },
+    themes,
+  };
+}
+
 /* ---------- Резервные копии ---------- */
 
 function backupName(now = new Date()) {
@@ -1234,6 +1346,9 @@ const routes = [
   }],
 
   ['GET', /^\/api\/statistics$/, () => getStatistics()],
+
+  ['GET', /^\/api\/statistics\/monthly$/, (req, url) =>
+    getMonthlyStatistics(url.searchParams.get('months'))],
 
   ['GET', /^\/api\/outcomes\/pending$/, () => pendingOutcomes()],
 

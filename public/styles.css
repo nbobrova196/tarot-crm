@@ -3670,6 +3670,184 @@ input[type="date"] {
   text-align: right;
 }
 
+/* ---------- Статистика по месяцам ---------- */
+
+.monthly-section {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.period-switch {
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.period-btn {
+  padding: 5px 12px;
+  border: none;
+  border-radius: 999px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.period-btn:hover {
+  color: var(--text);
+}
+
+.period-btn.active {
+  background: rgba(201, 168, 106, 0.16);
+  color: var(--gold-soft);
+}
+
+.period-btn:focus-visible {
+  outline: 1px solid var(--gold);
+  outline-offset: 1px;
+}
+
+.monthly-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 14px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.legend-readings {
+  background: var(--gold);
+}
+
+.legend-journal {
+  background: rgba(167, 157, 181, 0.65);
+}
+
+.monthly-chart {
+  padding-bottom: 4px;
+  overflow-x: auto;
+}
+
+.monthly-grid {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(26px, 1fr);
+  gap: 8px;
+  min-width: 520px;
+}
+
+.monthly-col {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.monthly-bars {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 3px;
+  height: 120px;
+  border-bottom: 1px solid var(--line);
+}
+
+.monthly-bar {
+  width: 9px;
+  border-radius: 2px 2px 0 0;
+}
+
+.monthly-bar-readings {
+  background: linear-gradient(180deg, var(--gold-soft), rgba(201, 168, 106, 0.5));
+}
+
+.monthly-bar-journal {
+  background: rgba(167, 157, 181, 0.55);
+}
+
+.monthly-label {
+  color: var(--muted);
+  font-size: 10.5px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.trend-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.trend-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.trend-row:first-child {
+  padding-top: 2px;
+  border-top: none;
+}
+
+.trend-row .theme {
+  justify-self: start;
+}
+
+.trend-flow {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.trend-arrow {
+  margin: 0 5px;
+  opacity: 0.6;
+}
+
+.trend-now {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.trend-delta {
+  min-width: 40px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.trend-up {
+  color: var(--gold-soft);
+}
+
+.trend-down {
+  color: #c08d8d;
+}
+
+.trend-flat {
+  color: var(--muted);
+}
+
 /* ---------- Адаптив ---------- */
 
 @media (max-width: 860px) {

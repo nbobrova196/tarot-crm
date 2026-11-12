@@ -4252,6 +4252,11 @@ const MONTHS_NOMINATIVE = [
   'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь',
 ];
 
+const MONTHS_SHORT = [
+  'янв', 'фев', 'мар', 'апр', 'май', 'июн',
+  'июл', 'авг', 'сен', 'окт', 'ноя', 'дек',
+];
+
 function parseMonth(value) {
   return /^\d{4}-(0[1-9]|1[0-2])$/.test(String(value ?? '')) ? value : todayIso().slice(0, 7);
 }
@@ -5758,6 +5763,121 @@ async function renderSearch(params = new URLSearchParams()) {
   paint();
 }
 
+let statsMonths = 12;
+
+function monthlyShortLabel(month, index = 1) {
+  const [year, monthNumber] = String(month).split('-').map(Number);
+  const label = MONTHS_SHORT[monthNumber - 1];
+  return index === 0 || monthNumber === 1 ? `${label} ${String(year).slice(2)}` : label;
+}
+
+function monthlyHalvesLabel(monthly) {
+  const { previous, recent } = monthly.halves;
+  const previousLabel = `${monthlyShortLabel(previous[0])}–${monthlyShortLabel(previous[previous.length - 1])}`;
+  const recentLabel = `${monthlyShortLabel(recent[0])}–${monthlyShortLabel(recent[recent.length - 1])}`;
+  return `${previousLabel} → ${recentLabel}`;
+}
+
+function monthlySectionHtml(monthly) {
+  const { series, totals, themes } = monthly;
+  const max = Math.max(1, ...series.map((item) => Math.max(item.readings, item.journal)));
+  const empty = totals.readings === 0 && totals.journal === 0;
+
+  const chart = empty
+    ? `<div class="empty">За последние ${monthly.months} месяцев нет раскладов и записей дневника.<br>Добавьте первый — и здесь появится динамика.</div>`
+    : `
+      <div class="monthly-legend">
+        <span class="legend-item"><span class="legend-dot legend-readings"></span>расклады · ${totals.readings}</span>
+        <span class="legend-item"><span class="legend-dot legend-journal"></span>дневник · ${totals.journal}</span>
+      </div>
+      <div class="monthly-chart">
+        <div class="monthly-grid">
+          ${series.map((item, index) => {
+            const readings = item.readings ? Math.max(5, Math.round((item.readings / max) * 100)) : 0;
+            const journal = item.journal ? Math.max(5, Math.round((item.journal / max) * 100)) : 0;
+            const title = `${monthLabel(item.month)}: ${item.readings} ${plural(item.readings, ['расклад', 'расклада', 'раскладов'])}, ${item.journal} ${plural(item.journal, ['запись', 'записи', 'записей'])}`;
+            return `
+              <div class="monthly-col" title="${escapeHtml(title)}">
+                <div class="monthly-bars">
+                  <span class="monthly-bar monthly-bar-readings" style="height:${readings}%"></span>
+                  <span class="monthly-bar monthly-bar-journal" style="height:${journal}%"></span>
+                </div>
+                <span class="monthly-label">${monthlyShortLabel(item.month, index)}</span>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+      <p class="hint">Наведите на столбик, чтобы увидеть точные числа.</p>
+    `;
+
+  const trendRows = themes.map((item) => {
+    const delta = item.delta > 0 ? `+${item.delta}` : String(item.delta);
+    return `
+      <div class="trend-row">
+        <span class="theme">${escapeHtml(item.theme)}</span>
+        <span class="trend-flow">
+          <span>${item.previous}</span><span class="trend-arrow">→</span><span class="trend-now">${item.recent}</span>
+        </span>
+        <span class="trend-delta trend-${item.direction}">${delta}</span>
+      </div>
+    `;
+  }).join('');
+
+  const trendBody = totals.readings === 0
+    ? '<div class="empty">Темы считаются по картам из раскладов. Пока раскладов за период нет.</div>'
+    : themes.length === 0
+      ? '<div class="empty">Пока мало данных для сравнения.<br>Нужно хотя бы два упоминания темы за период.</div>'
+      : `<div class="trend-list">${trendRows}</div>
+         <p class="hint">${monthlyHalvesLabel(monthly)}. Слева — первая половина периода, справа — вторая.</p>`;
+
+  return `
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Расклады и дневник по месяцам</h2>
+        <div class="period-switch" role="group" aria-label="Период статистики">
+          <button type="button" class="period-btn ${monthly.months === 6 ? 'active' : ''}" data-months="6">6 месяцев</button>
+          <button type="button" class="period-btn ${monthly.months === 12 ? 'active' : ''}" data-months="12">12 месяцев</button>
+        </div>
+      </div>
+      ${chart}
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Темы: что растёт и что становится реже</h2>
+        <span class="muted">${themes.length ? `${themes.length} ${plural(themes.length, ['тема', 'темы', 'тем'])}` : ''}</span>
+      </div>
+      ${trendBody}
+    </div>
+  `;
+}
+
+function bindMonthlyControls() {
+  viewEl.querySelectorAll('[data-months]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const months = Number(button.dataset.months);
+      if (months === statsMonths) return;
+      statsMonths = months;
+      await refreshMonthlySection();
+    });
+  });
+}
+
+async function refreshMonthlySection() {
+  const host = document.getElementById('monthly-section');
+  if (!host) return;
+
+  host.innerHTML = '<div class="panel"><p class="muted">Считаем…</p></div>';
+  try {
+    const monthly = await api(`/api/statistics/monthly?months=${statsMonths}`);
+    host.innerHTML = monthlySectionHtml(monthly);
+    bindMonthlyControls();
+  } catch (error) {
+    host.innerHTML = `<div class="panel"><p class="form-error">Не удалось посчитать статистику: ${escapeHtml(error.message)}</p></div>`;
+  }
+}
+
 async function renderStatistics() {
   titleEl.textContent = 'Поиск и статистика';
   subtitleEl.textContent = 'Закономерности практики';
@@ -5771,6 +5891,13 @@ async function renderStatistics() {
   } catch (error) {
     viewEl.innerHTML = `${searchTabs('stats')}<div class="panel"><p>${escapeHtml(error.message)}</p></div>`;
     return;
+  }
+
+  let monthly = null;
+  try {
+    monthly = await api(`/api/statistics/monthly?months=${statsMonths}`);
+  } catch {
+    // Без этого блока остальная статистика работает.
   }
 
   const totals = stats.totals;
@@ -5921,6 +6048,8 @@ async function renderStatistics() {
       <p class="hint">Расклады для себя: ${totals.selfReadings}.</p>
     </div>
 
+    ${monthly ? `<div class="monthly-section" id="monthly-section">${monthlySectionHtml(monthly)}</div>` : ''}
+
     <div class="panel">
       <div class="panel-head">
         <h2>Итоги и оценки</h2>
@@ -6016,6 +6145,8 @@ async function renderStatistics() {
       </div>
     </div>
   `;
+
+  bindMonthlyControls();
 }
 
 /* ---------- Заглушки ---------- */
