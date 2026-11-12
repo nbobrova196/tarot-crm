@@ -233,8 +233,8 @@ for (const name of names) {
   if (target.launcherName.endsWith('.command')) await chmod(launcherFile, 0o755);
 
   await cp(
-    path.join(templatesDir, 'ПРОЧТИ МЕНЯ.txt'),
-    path.join(appDir, 'ПРОЧТИ МЕНЯ.txt'),
+    path.join(templatesDir, 'КАК ЗАПУСТИТЬ.txt'),
+    path.join(appDir, 'КАК ЗАПУСТИТЬ.txt'),
   );
 
   const zipName = `Tarot-${pkg.version}-${target.label}.zip`;
