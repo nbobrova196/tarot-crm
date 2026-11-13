@@ -15,6 +15,12 @@ const SECTIONS = [
     subtitle: 'Значения карт и личные трактовки',
   },
   {
+    id: 'interpretations',
+    label: 'Трактовки',
+    title: 'Трактовки',
+    subtitle: 'Свои формулировки по картам и раскладам',
+  },
+  {
     id: 'readings',
     label: 'Расклады',
     title: 'Расклады',
@@ -1607,6 +1613,341 @@ async function renderCardEdit(id, options = {}) {
   });
 
   paintInterps();
+}
+
+/* ---------- Трактовки ---------- */
+
+const INTERP_ORIENTATION_FILTERS = [
+  { id: 'all', label: 'Все' },
+  { id: 'upright', label: 'Прямые' },
+  { id: 'reversed', label: 'Перевёрнутые' },
+];
+
+function interpCatalogParams(state) {
+  const params = new URLSearchParams();
+  if (state.query.trim()) params.set('q', state.query.trim());
+  if (state.cardId) params.set('card', state.cardId);
+  if (state.orientation !== 'all') params.set('orientation', state.orientation);
+  if (state.spread) params.set('spread', state.spread);
+  return params;
+}
+
+function interpCatalogUrl(state) {
+  const query = interpCatalogParams(state).toString();
+  return query ? `#/interpretations?${query}` : '#/interpretations';
+}
+
+function interpCatalogItem(item) {
+  return `
+    <article class="interp-catalog-item">
+      <a class="interp-catalog-thumb" href="#/cards/${item.card_id}" title="Открыть карту">
+        <img src="${item.card_image}" alt="" loading="lazy"
+             onerror="this.onerror=null;this.src='cards/placeholder.svg'">
+      </a>
+      <div class="interp-catalog-body">
+        <div class="interp-head">
+          <a class="interp-catalog-card" href="#/cards/${item.card_id}">${escapeHtml(item.card_name_ru)}</a>
+          <span class="interp-orientation ${item.orientation}">
+            ${item.orientation === 'upright' ? 'прямое' : 'перевёрнутое'}
+          </span>
+          ${item.title ? `<span class="interp-title">${escapeHtml(item.title)}</span>` : ''}
+          <span class="interp-actions">
+            <button class="icon-btn" type="button" data-action="edit" data-id="${item.id}"
+                    title="Изменить">✎</button>
+            <button class="icon-btn danger" type="button" data-action="delete" data-id="${item.id}"
+                    title="Удалить">×</button>
+          </span>
+        </div>
+        <div class="interp-body">${escapeHtml(item.body)}</div>
+      </div>
+    </article>
+  `;
+}
+
+function interpCatalogGroups(items) {
+  const groups = new Map();
+  for (const item of items) {
+    const key = (item.spread_name ?? '').trim();
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  }
+
+  const order = new Map(SPREAD_TYPES.map((name, index) => [name, index]));
+  const keys = [...groups.keys()].sort((a, b) => {
+    if (!a) return 1;
+    if (!b) return -1;
+    const ai = order.has(a) ? order.get(a) : 1000;
+    const bi = order.has(b) ? order.get(b) : 1000;
+    return ai - bi || a.localeCompare(b, 'ru');
+  });
+
+  return keys.map((key) => ({ name: key, items: groups.get(key) }));
+}
+
+async function renderInterpretations(params = new URLSearchParams()) {
+  const state = {
+    query: (params.get('q') ?? '').trim(),
+    cardId: params.get('card') ?? '',
+    orientation: ['upright', 'reversed'].includes(params.get('orientation'))
+      ? params.get('orientation')
+      : 'all',
+    spread: params.get('spread') ?? '',
+  };
+
+  viewEl.innerHTML = `
+    <div class="cards-toolbar">
+      <div class="chips" id="interp-orientation-filters">
+        ${INTERP_ORIENTATION_FILTERS.map((filter) => `
+          <button type="button" class="chip${filter.id === state.orientation ? ' is-active' : ''}"
+                  data-orientation="${filter.id}">${filter.label}</button>
+        `).join('')}
+      </div>
+      <span class="search-field">
+        <input class="search" id="interp-search" type="search" autocomplete="off"
+               placeholder="Поиск по карте или тексту"
+               value="${escapeHtml(state.query)}">
+        <button class="search-clear" id="interp-search-clear" type="button"
+                aria-label="Очистить поиск" title="Очистить поиск" hidden>×</button>
+      </span>
+    </div>
+
+    <div class="filters-row">
+      <select class="select chip-select" id="interp-card-filter" aria-label="Фильтр по карте">
+        <option value="">Все карты</option>
+      </select>
+      <select class="select chip-select" id="interp-spread-filter" aria-label="Фильтр по раскладу">
+        <option value="">Все расклады</option>
+        <option value="__none__">Для всех раскладов</option>
+      </select>
+      <button class="btn btn-small reset-filters" type="button" id="interp-reset" hidden>Сбросить фильтры</button>
+      <button class="btn btn-primary interp-add-btn" type="button" id="interp-add">Добавить трактовку</button>
+    </div>
+
+    <p class="result-count muted" id="interp-count"></p>
+    <div id="interp-groups"><p class="muted">Загрузка…</p></div>
+  `;
+
+  const groupsHost = document.getElementById('interp-groups');
+  const counter = document.getElementById('interp-count');
+  const search = document.getElementById('interp-search');
+  const clearSearchButton = document.getElementById('interp-search-clear');
+  const resetButton = document.getElementById('interp-reset');
+  const cardFilter = document.getElementById('interp-card-filter');
+  const spreadFilter = document.getElementById('interp-spread-filter');
+
+  let data;
+  let allCards;
+  try {
+    [data, allCards] = await Promise.all([api('/api/interpretations'), getCards()]);
+  } catch (error) {
+    groupsHost.innerHTML = `<div class="panel"><p>${escapeHtml(error.message)}</p></div>`;
+    return;
+  }
+
+  cardFilter.insertAdjacentHTML('beforeend', data.cards.map((card) => `
+    <option value="${card.id}">${escapeHtml(card.name_ru)} (${card.count})</option>
+  `).join(''));
+  spreadFilter.insertAdjacentHTML('beforeend', data.spreads.map((spread) => `
+    <option value="${escapeHtml(spread.name)}">${escapeHtml(spread.name)} (${spread.count})</option>
+  `).join(''));
+
+  if (state.cardId && !data.cards.some((card) => String(card.id) === String(state.cardId))) {
+    state.cardId = '';
+  }
+  if (state.spread && state.spread !== '__none__'
+    && !data.spreads.some((spread) => spread.name === state.spread)) {
+    state.spread = '';
+  }
+
+  cardFilter.value = state.cardId;
+  spreadFilter.value = state.spread;
+  enhanceSelects(viewEl);
+  syncCustomSelect(cardFilter);
+  syncCustomSelect(spreadFilter);
+
+  function syncUrl() {
+    history.replaceState(null, '', interpCatalogUrl(state));
+  }
+
+  function matches(item) {
+    if (state.cardId && String(item.card_id) !== String(state.cardId)) return false;
+    if (state.orientation !== 'all' && item.orientation !== state.orientation) return false;
+
+    const spread = (item.spread_name ?? '').trim();
+    if (state.spread) {
+      if (state.spread === '__none__') {
+        if (spread) return false;
+      } else if (spread !== state.spread) {
+        return false;
+      }
+    }
+
+    const query = state.query.trim().toLowerCase();
+    if (!query) return true;
+    const haystack = [
+      item.card_name_ru,
+      item.card_name_en,
+      item.title ?? '',
+      item.body,
+      spread,
+    ].join(' ').toLowerCase();
+    return haystack.includes(query);
+  }
+
+  function paint() {
+    for (const chip of document.querySelectorAll('#interp-orientation-filters .chip')) {
+      chip.classList.toggle('is-active', chip.dataset.orientation === state.orientation);
+    }
+    resetButton.hidden = state.orientation === 'all' && !state.cardId
+      && !state.spread && !state.query.trim();
+    clearSearchButton.hidden = !state.query.trim();
+
+    const items = data.items.filter(matches);
+    counter.textContent = data.total === 0
+      ? ''
+      : items.length === data.total
+        ? `${data.total} ${plural(data.total, ['трактовка', 'трактовки', 'трактовок'])}`
+        : `Показано ${items.length} из ${data.total}`;
+
+    if (data.total === 0) {
+      groupsHost.innerHTML = `
+        <div class="panel">
+          <div class="empty">
+            Пока нет своих трактовок.<br>
+            Добавьте первую — она появится здесь, сгруппированная по раскладу.
+          </div>
+          <div class="empty-actions">
+            <button class="btn btn-primary" type="button" data-action="add">Добавить трактовку</button>
+          </div>
+        </div>
+      `;
+      return;
+    }
+
+    if (items.length === 0) {
+      groupsHost.innerHTML = `
+        <div class="panel">
+          <div class="empty">
+            По выбранным условиям трактовок нет.<br>
+            Измените фильтры или сбросьте их.
+          </div>
+        </div>
+      `;
+      return;
+    }
+
+    groupsHost.innerHTML = interpCatalogGroups(items).map((group) => `
+      <section class="interp-group">
+        <div class="interp-group-head">
+          <h2>${escapeHtml(group.name || 'Для всех раскладов')}</h2>
+          <span class="interp-group-count">${group.items.length}
+            ${plural(group.items.length, ['трактовка', 'трактовки', 'трактовок'])}</span>
+        </div>
+        <div class="interp-catalog-list">
+          ${group.items.map(interpCatalogItem).join('')}
+        </div>
+      </section>
+    `).join('');
+  }
+
+  function reload() {
+    return renderInterpretations(interpCatalogParams(state));
+  }
+
+  function openAdd() {
+    openInterpDialog({
+      cards: allCards,
+      spreads: data.spreads.map((spread) => spread.name),
+      defaultCardId: state.cardId,
+      defaultSpread: state.spread,
+      defaultOrientation: state.orientation,
+      onSaved: reload,
+    });
+  }
+
+  document.getElementById('interp-add').addEventListener('click', openAdd);
+
+  document.getElementById('interp-orientation-filters').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-orientation]');
+    if (!button) return;
+    state.orientation = button.dataset.orientation;
+    syncUrl();
+    paint();
+  });
+
+  search.addEventListener('input', () => {
+    state.query = search.value;
+    syncUrl();
+    paint();
+  });
+
+  clearSearchButton.addEventListener('click', () => {
+    state.query = '';
+    search.value = '';
+    syncUrl();
+    paint();
+    search.focus();
+  });
+
+  cardFilter.addEventListener('change', () => {
+    state.cardId = cardFilter.value;
+    syncUrl();
+    paint();
+  });
+
+  spreadFilter.addEventListener('change', () => {
+    state.spread = spreadFilter.value;
+    syncUrl();
+    paint();
+  });
+
+  resetButton.addEventListener('click', () => {
+    state.query = '';
+    state.cardId = '';
+    state.orientation = 'all';
+    state.spread = '';
+    search.value = '';
+    setSelectValue(cardFilter, '');
+    setSelectValue(spreadFilter, '');
+    syncUrl();
+    paint();
+  });
+
+  groupsHost.addEventListener('click', async (event) => {
+    const button = event.target.closest('[data-action]');
+    if (!button) return;
+
+    if (button.dataset.action === 'add') {
+      openAdd();
+      return;
+    }
+
+    const item = data.items.find((row) => row.id === Number(button.dataset.id));
+    if (!item) return;
+
+    if (button.dataset.action === 'edit') {
+      openInterpDialog({
+        item,
+        cards: allCards,
+        spreads: data.spreads.map((spread) => spread.name),
+        onSaved: reload,
+      });
+      return;
+    }
+
+    if (button.dataset.action === 'delete') {
+      if (!confirm(`Удалить трактовку «${item.card_name_ru}»? Исходный текст карты останется.`)) return;
+      try {
+        await api(`/api/interpretations/${item.id}`, { method: 'DELETE' });
+        cardsCache = null;
+        reload();
+      } catch (error) {
+        alert(error.message);
+      }
+    }
+  });
+
+  paint();
 }
 
 /* ---------- Клиенты ---------- */
@@ -6429,6 +6770,141 @@ function feedbackIssueLinks(health) {
   };
 }
 
+/* ---------- Диалог трактовки ---------- */
+
+let interpDialogContext = null;
+
+function closeInterpDialog() {
+  const dialog = document.getElementById('interp-dialog');
+  if (!dialog) return;
+  if (typeof dialog.close === 'function') dialog.close();
+  else dialog.removeAttribute('open');
+  interpDialogContext = null;
+}
+
+function openInterpDialog({
+  item = null,
+  cards = [],
+  spreads = [],
+  defaultCardId = '',
+  defaultSpread = '',
+  defaultOrientation = 'upright',
+  onSaved = null,
+} = {}) {
+  const dialog = document.getElementById('interp-dialog');
+  const form = document.getElementById('interp-dialog-form');
+  if (!dialog || !form) return;
+
+  interpDialogContext = { item, onSaved };
+  form.reset();
+
+  const title = document.getElementById('interp-dialog-title');
+  const subtitle = document.getElementById('interp-dialog-sub');
+  const cardField = document.getElementById('interp-card-field');
+  const cardSelect = form.elements.card_id;
+  const spreadSelect = form.elements.spread_name;
+  const submit = form.querySelector('button[type="submit"]');
+  const errorEl = document.getElementById('interp-dialog-error');
+
+  cardSelect.innerHTML = cards.map((card) => `
+    <option value="${card.id}">${escapeHtml(card.name_ru)}${card.name_en ? ` · ${escapeHtml(card.name_en)}` : ''}</option>
+  `).join('');
+
+  const spreadNames = [...new Set([...SPREAD_TYPES, ...spreads.filter(Boolean)])];
+  spreadSelect.innerHTML = '<option value="">Для всех раскладов</option>' + spreadNames.map((name) => `
+    <option value="${escapeHtml(name)}">${escapeHtml(name)}</option>
+  `).join('');
+
+  if (item) {
+    title.textContent = 'Изменить трактовку';
+    subtitle.textContent = `${item.card_name_ru} · ${item.orientation === 'upright' ? 'прямое' : 'перевёрнутое'} положение`;
+    cardField.hidden = true;
+    cardSelect.value = String(item.card_id);
+    form.elements.orientation.value = item.orientation;
+    form.elements.title.value = item.title ?? '';
+    form.elements.body.value = item.body;
+    spreadSelect.value = item.spread_name ?? '';
+    submit.textContent = 'Сохранить изменения';
+  } else {
+    title.textContent = 'Новая трактовка';
+    subtitle.textContent = 'Своя формулировка для карты и расклада.';
+    cardField.hidden = false;
+    cardSelect.value = defaultCardId
+      && cards.some((card) => String(card.id) === String(defaultCardId))
+      ? String(defaultCardId)
+      : (cards[0] ? String(cards[0].id) : '');
+    form.elements.orientation.value = defaultOrientation === 'reversed' ? 'reversed' : 'upright';
+    form.elements.title.value = '';
+    form.elements.body.value = '';
+    spreadSelect.value = defaultSpread && defaultSpread !== '__none__' ? defaultSpread : '';
+    submit.textContent = 'Добавить';
+  }
+
+  errorEl.textContent = '';
+  submit.disabled = false;
+
+  if (typeof dialog.showModal === 'function') {
+    if (!dialog.open) dialog.showModal();
+  } else {
+    dialog.setAttribute('open', '');
+  }
+
+  setTimeout(() => form.elements.body.focus(), 60);
+}
+
+function setupInterpDialog() {
+  const dialog = document.getElementById('interp-dialog');
+  const form = document.getElementById('interp-dialog-form');
+  if (!dialog || !form) return;
+
+  document.getElementById('interp-dialog-close')?.addEventListener('click', closeInterpDialog);
+  document.getElementById('interp-dialog-cancel')?.addEventListener('click', closeInterpDialog);
+  dialog.addEventListener('cancel', () => {
+    interpDialogContext = null;
+  });
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+
+    const errorEl = document.getElementById('interp-dialog-error');
+    const submit = form.querySelector('button[type="submit"]');
+    errorEl.textContent = '';
+    submit.disabled = true;
+
+    const data = new FormData(form);
+    const payload = {
+      orientation: data.get('orientation'),
+      title: data.get('title'),
+      body: data.get('body'),
+      spread_name: data.get('spread_name'),
+    };
+
+    const context = interpDialogContext;
+    try {
+      if (context?.item) {
+        await api(`/api/interpretations/${context.item.id}`, {
+          method: 'PUT',
+          body: JSON.stringify(payload),
+        });
+      } else {
+        const cardId = Number(data.get('card_id'));
+        if (!cardId) throw new Error('Выберите карту');
+        await api(`/api/cards/${cardId}/interpretations`, {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        });
+      }
+
+      cardsCache = null;
+      closeInterpDialog();
+      await context?.onSaved?.();
+    } catch (error) {
+      errorEl.textContent = error.message;
+      submit.disabled = false;
+    }
+  });
+}
+
 /* ---------- Маршрутизация ---------- */
 
 function route() {
@@ -6459,6 +6935,8 @@ function route() {
     renderCardDetail(action);
   } else if (section.id === 'cards') {
     renderCards(params);
+  } else if (section.id === 'interpretations') {
+    renderInterpretations(params);
   } else if (section.id === 'events' && action === 'new') {
     renderEventForm(null, {
       readingId: params.get('reading'),
@@ -6531,6 +7009,7 @@ async function checkServer() {
 
 setupFeedback();
 setupBackup();
+setupInterpDialog();
 
 window.addEventListener('hashchange', route);
 route();

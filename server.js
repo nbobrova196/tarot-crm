@@ -1420,6 +1420,100 @@ const routes = [
     return withInterpretations(parseCard(updated), interpretationsByCard([id]));
   }],
 
+  ['GET', /^\/api\/interpretations$/, (req, url) => {
+    const query = (url.searchParams.get('q') ?? '').trim().toLowerCase();
+    const cardId = Number(url.searchParams.get('card_id')) || null;
+    const requestedOrientation = url.searchParams.get('orientation');
+    const orientation = CARD_ORIENTATIONS.includes(requestedOrientation) ? requestedOrientation : null;
+    const spreadParam = url.searchParams.get('spread');
+
+    const rows = db.prepare(`
+      SELECT
+        i.id,
+        i.card_id,
+        i.orientation,
+        i.title,
+        i.body,
+        i.spread_name,
+        i.created_at,
+        i.updated_at,
+        c.name_ru AS card_name_ru,
+        c.name_en AS card_name_en,
+        c.image AS card_image
+      FROM card_interpretations i
+      JOIN cards c ON c.id = i.card_id
+      ORDER BY
+        CASE WHEN i.spread_name IS NULL OR i.spread_name = '' THEN 1 ELSE 0 END,
+        i.spread_name COLLATE NOCASE,
+        c.name_ru COLLATE NOCASE,
+        CASE i.orientation WHEN 'upright' THEN 0 ELSE 1 END,
+        i.id
+    `).all();
+
+    const spreadCounts = new Map();
+    const cardCounts = new Map();
+    const orientations = { upright: 0, reversed: 0 };
+
+    for (const row of rows) {
+      const spread = (row.spread_name ?? '').trim();
+      if (spread) spreadCounts.set(spread, (spreadCounts.get(spread) ?? 0) + 1);
+
+      const card = cardCounts.get(row.card_id);
+      if (card) {
+        card.count += 1;
+      } else {
+        cardCounts.set(row.card_id, {
+          id: row.card_id,
+          name_ru: row.card_name_ru,
+          name_en: row.card_name_en,
+          image: row.card_image,
+          count: 1,
+        });
+      }
+
+      orientations[row.orientation] += 1;
+    }
+
+    const items = rows.filter((row) => {
+      if (cardId && row.card_id !== cardId) return false;
+      if (orientation && row.orientation !== orientation) return false;
+
+      const spread = (row.spread_name ?? '').trim();
+      if (spreadParam !== null) {
+        if (spreadParam === '__none__') {
+          if (spread) return false;
+        } else if (spread !== spreadParam) {
+          return false;
+        }
+      }
+
+      if (query) {
+        const haystack = [
+          row.card_name_ru,
+          row.card_name_en,
+          row.title ?? '',
+          row.body,
+          spread,
+        ].join(' ').toLowerCase();
+        if (!haystack.includes(query)) return false;
+      }
+
+      return true;
+    }).map((row) => ({ ...row, spread_name: row.spread_name || null }));
+
+    return {
+      total: rows.length,
+      count: items.length,
+      items,
+      spreads: [...spreadCounts.entries()]
+        .map(([name, count]) => ({ name, count }))
+        .sort((a, b) => a.name.localeCompare(b.name, 'ru')),
+      cards: [...cardCounts.values()]
+        .sort((a, b) => a.name_ru.localeCompare(b.name_ru, 'ru')),
+      orientations,
+    };
+  }],
+
   ['POST', /^\/api\/cards\/(\d+)\/interpretations$/, async (req, url, match) => {
     const cardId = Number(match[1]);
     const card = db.prepare('SELECT id FROM cards WHERE id = ?').get(cardId);

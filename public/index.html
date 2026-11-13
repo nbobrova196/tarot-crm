@@ -106,6 +106,52 @@
     </form>
   </dialog>
 
+  <dialog class="feedback-dialog" id="interp-dialog" aria-labelledby="interp-dialog-title">
+    <form class="form feedback-form" id="interp-dialog-form" novalidate>
+      <div class="feedback-head">
+        <div>
+          <h2 id="interp-dialog-title">Новая трактовка</h2>
+          <p class="muted feedback-sub" id="interp-dialog-sub">Своя формулировка для карты и расклада.</p>
+        </div>
+        <button class="icon-btn" type="button" id="interp-dialog-close" aria-label="Закрыть">×</button>
+      </div>
+
+      <label id="interp-card-field"><span>Карта<span class="req">*</span></span>
+        <select name="card_id" required></select>
+      </label>
+
+      <div class="form-row">
+        <label>Расклад
+          <select name="spread_name">
+            <option value="">Для всех раскладов</option>
+          </select>
+        </label>
+        <label>Положение
+          <select name="orientation">
+            <option value="upright">Прямое</option>
+            <option value="reversed">Перевёрнутое</option>
+          </select>
+        </label>
+      </div>
+
+      <label>Название <span class="muted">(необязательно)</span>
+        <input name="title" maxlength="200" placeholder="Например: для работы">
+      </label>
+
+      <label><span>Трактовка<span class="req">*</span></span>
+        <textarea name="body" rows="6" maxlength="1000" required
+                  placeholder="Как вы читаете эту карту в этом положении"></textarea>
+      </label>
+      <p class="field-hint muted">Максимум 1000 символов.</p>
+      <p class="form-error" id="interp-dialog-error"></p>
+
+      <div class="form-actions">
+        <button class="btn btn-primary" type="submit">Добавить</button>
+        <button class="btn" type="button" id="interp-dialog-cancel">Отмена</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog class="feedback-dialog" id="restore-dialog" aria-labelledby="restore-title">
     <div class="feedback-form">
       <div class="feedback-head">
