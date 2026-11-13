@@ -1729,8 +1729,9 @@ async function renderInterpretations(params = new URLSearchParams()) {
       <button class="btn btn-primary interp-add-btn" type="button" id="interp-add">Добавить трактовку</button>
     </div>
 
-    <p class="hint">Здесь показываются только карты с добавленными трактовками.
-      Для любой другой карты выберите её в фильтре и нажмите «Добавить трактовку».</p>
+    <p class="hint">В каталоге показываются только карты с добавленными трактовками.
+      Чтобы добавить трактовку другой карте, выберите её в выпадающем списке
+      «Все карты» под строкой поиска — появится кнопка «Добавить трактовку».</p>
     <p class="result-count muted" id="interp-count"></p>
     <div id="interp-groups"><p class="muted">Загрузка…</p></div>
   `;
