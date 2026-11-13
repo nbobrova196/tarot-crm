@@ -94,6 +94,56 @@ function safeJson(value) {
   }
 }
 
+// Синонимы достоинств и мастей: запрос «3» или «три» находит «Тройку»,
+// «пентакли» — все карты Пентаклей.
+const RANK_SEARCH_ALIASES = {
+  ace: ['туз', 'ace', '1'],
+  2: ['двойка', 'два', 'две', '2', 'two'],
+  3: ['тройка', 'три', '3', 'three'],
+  4: ['четверка', 'четыре', '4', 'four'],
+  5: ['пятерка', 'пять', '5', 'five'],
+  6: ['шестерка', 'шесть', '6', 'six'],
+  7: ['семерка', 'семь', '7', 'seven'],
+  8: ['восьмерка', 'восемь', '8', 'eight'],
+  9: ['девятка', 'девять', '9', 'nine'],
+  10: ['десятка', 'десять', '10', 'ten'],
+  page: ['паж', 'page', '11'],
+  knight: ['рыцарь', 'knight', '12'],
+  queen: ['королева', 'дама', 'queen', '13'],
+  king: ['король', 'king', '14'],
+};
+
+const SUIT_SEARCH_ALIASES = {
+  wands: ['жезл', 'жезлы', 'жезлов', 'посох', 'посохи', 'wand', 'wands'],
+  cups: ['кубок', 'кубки', 'кубков', 'чаша', 'чаши', 'cup', 'cups'],
+  swords: ['меч', 'мечи', 'мечей', 'sword', 'swords'],
+  pentacles: ['пентакль', 'пентакли', 'пентаклей', 'монета', 'монеты', 'денарий', 'денарии', 'pentacle', 'pentacles'],
+};
+
+function normalizeSearchText(value) {
+  return String(value ?? '').toLowerCase().replace(/ё/g, 'е');
+}
+
+function cardSearchAliases(card) {
+  if (card.arcana !== 'minor') return '';
+  return [
+    ...(RANK_SEARCH_ALIASES[String(card.rank)] ?? []),
+    ...(SUIT_SEARCH_ALIASES[card.suit] ?? []),
+  ].join(' ');
+}
+
+function matchesSearchQuery(text, query) {
+  const tokens = normalizeSearchText(query).trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return true;
+  const haystack = normalizeSearchText(text);
+  return tokens.every((token) => {
+    if (/^\d+$/.test(token)) {
+      return new RegExp(`(^|[^0-9])${token}([^0-9]|$)`).test(haystack);
+    }
+    return haystack.includes(token);
+  });
+}
+
 function httpError(message, status) {
   return Object.assign(new Error(message), { status });
 }
@@ -1384,10 +1434,12 @@ const routes = [
           card.name_en,
           card.slug,
           card.keywords.join(' '),
+          card.themes.join(' '),
           card.notes ?? '',
+          cardSearchAliases(card),
           personal,
         ].join(' ');
-        return haystack.toLowerCase().includes(query);
+        return matchesSearchQuery(haystack, query);
       });
     }
 
@@ -1422,7 +1474,7 @@ const routes = [
 
   ['GET', /^\/api\/interpretations$/, (req, url) => {
     const query = (url.searchParams.get('q') ?? '').trim().toLowerCase();
-    const cardId = Number(url.searchParams.get('card_id')) || null;
+    const cardId = Number(url.searchParams.get('card_id') ?? url.searchParams.get('card')) || null;
     const requestedOrientation = url.searchParams.get('orientation');
     const orientation = CARD_ORIENTATIONS.includes(requestedOrientation) ? requestedOrientation : null;
     const spreadParam = url.searchParams.get('spread');
@@ -1439,7 +1491,11 @@ const routes = [
         i.updated_at,
         c.name_ru AS card_name_ru,
         c.name_en AS card_name_en,
-        c.image AS card_image
+        c.image AS card_image,
+        c.arcana AS card_arcana,
+        c.suit AS card_suit,
+        c.rank AS card_rank,
+        c.number AS card_number
       FROM card_interpretations i
       JOIN cards c ON c.id = i.card_id
       ORDER BY
@@ -1494,8 +1550,13 @@ const routes = [
           row.title ?? '',
           row.body,
           spread,
-        ].join(' ').toLowerCase();
-        if (!haystack.includes(query)) return false;
+          cardSearchAliases({
+            arcana: row.card_arcana,
+            suit: row.card_suit,
+            rank: row.card_rank,
+          }),
+        ].join(' ');
+        if (!matchesSearchQuery(haystack, query)) return false;
       }
 
       return true;

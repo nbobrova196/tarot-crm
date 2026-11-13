@@ -298,6 +298,7 @@ function customSelectOptionHtml(option, select) {
   return `
     <button type="button" class="custom-select-option${selected ? ' is-selected' : ''}"
             role="option" aria-selected="${selected}" data-option-index="${option.index}"
+            data-search="${escapeHtml(option.dataset.search ?? '')}"
             ${option.disabled ? 'disabled' : ''}>
       ${escapeHtml(option.textContent.trim())}
     </button>
@@ -360,7 +361,10 @@ function filterCustomSelectOptions(wrapper, query) {
 
     if (!node.classList.contains('custom-select-option')) continue;
 
-    const matches = !normalized || node.textContent.toLowerCase().includes(normalized);
+    const haystack = normalizeSearchText(`${node.textContent} ${node.dataset.search ?? ''}`);
+    const tokens = normalized.split(/\s+/).filter(Boolean);
+    const matches = tokens.length === 0
+      || tokens.every((token) => searchTokenMatches(haystack, token));
     node.hidden = !matches;
     if (matches) {
       visible += 1;
@@ -1172,12 +1176,14 @@ async function renderCards(params = new URLSearchParams()) {
       const haystack = [
         card.name_ru,
         card.name_en,
+        card.slug,
         (card.keywords ?? []).join(' '),
         (card.themes ?? []).join(' '),
         card.notes ?? '',
+        cardSearchAliases(card),
         personal,
-      ].join(' ').toLowerCase();
-      return haystack.includes(query);
+      ];
+      return matchesSearch(haystack, query);
     });
 
     grid.innerHTML = list.length > 0
@@ -1626,7 +1632,7 @@ const INTERP_ORIENTATION_FILTERS = [
 function interpCatalogParams(state) {
   const params = new URLSearchParams();
   if (state.query.trim()) params.set('q', state.query.trim());
-  if (state.cardId) params.set('card', state.cardId);
+  if (state.cardId) params.set('card_id', state.cardId);
   if (state.orientation !== 'all') params.set('orientation', state.orientation);
   if (state.spread) params.set('spread', state.spread);
   return params;
@@ -1687,7 +1693,7 @@ function interpCatalogGroups(items) {
 async function renderInterpretations(params = new URLSearchParams()) {
   const state = {
     query: (params.get('q') ?? '').trim(),
-    cardId: params.get('card') ?? '',
+    cardId: params.get('card_id') ?? params.get('card') ?? '',
     orientation: ['upright', 'reversed'].includes(params.get('orientation'))
       ? params.get('orientation')
       : 'all',
@@ -1712,7 +1718,7 @@ async function renderInterpretations(params = new URLSearchParams()) {
     </div>
 
     <div class="filters-row">
-      <select class="select chip-select" id="interp-card-filter" aria-label="Фильтр по карте">
+      <select class="select chip-select" id="interp-card-filter" name="card_id" aria-label="Фильтр по карте">
         <option value="">Все карты</option>
       </select>
       <select class="select chip-select" id="interp-spread-filter" aria-label="Фильтр по раскладу">
@@ -1723,6 +1729,8 @@ async function renderInterpretations(params = new URLSearchParams()) {
       <button class="btn btn-primary interp-add-btn" type="button" id="interp-add">Добавить трактовку</button>
     </div>
 
+    <p class="hint">Здесь показываются только карты с добавленными трактовками.
+      Для любой другой карты выберите её в фильтре и нажмите «Добавить трактовку».</p>
     <p class="result-count muted" id="interp-count"></p>
     <div id="interp-groups"><p class="muted">Загрузка…</p></div>
   `;
@@ -1744,14 +1752,22 @@ async function renderInterpretations(params = new URLSearchParams()) {
     return;
   }
 
-  cardFilter.insertAdjacentHTML('beforeend', data.cards.map((card) => `
-    <option value="${card.id}">${escapeHtml(card.name_ru)} (${card.count})</option>
-  `).join(''));
+  // В фильтре — все 78 карт, а не только те, у которых уже есть трактовки.
+  // Так видно, что каталог не «теряет» карты: трактовку можно добавить любой.
+  const interpCounts = new Map(data.cards.map((card) => [String(card.id), card.count]));
+  cardFilter.insertAdjacentHTML('beforeend', [...allCards]
+    .sort((a, b) => a.name_ru.localeCompare(b.name_ru, 'ru'))
+    .map((card) => {
+      const count = interpCounts.get(String(card.id)) ?? 0;
+      return `<option value="${card.id}" data-search="${escapeHtml(cardSearchAliases(card))}">`
+        + `${escapeHtml(card.name_ru)}${count ? ` (${count})` : ''}</option>`;
+    })
+    .join(''));
   spreadFilter.insertAdjacentHTML('beforeend', data.spreads.map((spread) => `
     <option value="${escapeHtml(spread.name)}">${escapeHtml(spread.name)} (${spread.count})</option>
   `).join(''));
 
-  if (state.cardId && !data.cards.some((card) => String(card.id) === String(state.cardId))) {
+  if (state.cardId && !allCards.some((card) => String(card.id) === String(state.cardId))) {
     state.cardId = '';
   }
   if (state.spread && state.spread !== '__none__'
@@ -1782,7 +1798,7 @@ async function renderInterpretations(params = new URLSearchParams()) {
       }
     }
 
-    const query = state.query.trim().toLowerCase();
+    const query = state.query.trim();
     if (!query) return true;
     const haystack = [
       item.card_name_ru,
@@ -1790,8 +1806,9 @@ async function renderInterpretations(params = new URLSearchParams()) {
       item.title ?? '',
       item.body,
       spread,
-    ].join(' ').toLowerCase();
-    return haystack.includes(query);
+      cardSearchAliases(item),
+    ];
+    return matchesSearch(haystack, query);
   }
 
   function paint() {
@@ -1803,11 +1820,19 @@ async function renderInterpretations(params = new URLSearchParams()) {
     clearSearchButton.hidden = !state.query.trim();
 
     const items = data.items.filter(matches);
-    counter.textContent = data.total === 0
-      ? ''
-      : items.length === data.total
-        ? `${data.total} ${plural(data.total, ['трактовка', 'трактовки', 'трактовок'])}`
-        : `Показано ${items.length} из ${data.total}`;
+    const selectedCard = state.cardId
+      ? allCards.find((card) => String(card.id) === String(state.cardId))
+      : null;
+    const selectedCardHasInterps = state.cardId
+      && (interpCounts.get(String(state.cardId)) ?? 0) > 0;
+
+    counter.textContent = selectedCard && !selectedCardHasInterps
+      ? `${selectedCard.name_ru}: 0 трактовок`
+      : data.total === 0
+        ? ''
+        : items.length === data.total
+          ? `${data.total} ${plural(data.total, ['трактовка', 'трактовки', 'трактовок'])}`
+          : `Показано ${items.length} из ${data.total}`;
 
     if (data.total === 0) {
       groupsHost.innerHTML = `
@@ -1815,6 +1840,21 @@ async function renderInterpretations(params = new URLSearchParams()) {
           <div class="empty">
             Пока нет своих трактовок.<br>
             Добавьте первую — она появится здесь, сгруппированная по раскладу.
+          </div>
+          <div class="empty-actions">
+            <button class="btn btn-primary" type="button" data-action="add">Добавить трактовку</button>
+          </div>
+        </div>
+      `;
+      return;
+    }
+
+    if (selectedCard && !selectedCardHasInterps) {
+      groupsHost.innerHTML = `
+        <div class="panel">
+          <div class="empty">
+            У карты «${escapeHtml(selectedCard.name_ru)}» пока нет своих трактовок.<br>
+            Добавьте первую — она сразу появится в этом каталоге.
           </div>
           <div class="empty-actions">
             <button class="btn btn-primary" type="button" data-action="add">Добавить трактовку</button>
@@ -2871,12 +2911,18 @@ async function renderReadingForm(id, options = {}) {
   function paintPicker() {
     if (picker.hidden) return;
 
-    const query = pickerSearch.value.trim().toLowerCase();
+    const query = pickerSearch.value.trim();
     const used = new Set(reading.cards.map((card) => card.card_id));
     const list = deck.filter((card) => {
       if (!query) return true;
-      const haystack = `${card.name_ru} ${card.name_en} ${(card.keywords ?? []).join(' ')}`.toLowerCase();
-      return haystack.includes(query);
+      const haystack = [
+        card.name_ru,
+        card.name_en,
+        card.slug,
+        (card.keywords ?? []).join(' '),
+        cardSearchAliases(card),
+      ];
+      return matchesSearch(haystack, query);
     });
 
     pickerNote.textContent = `${list.length} ${plural(list.length, ['карта', 'карты', 'карт'])} · в раскладе ${used.size}`;
@@ -5666,12 +5712,74 @@ function normalizeSearchText(value) {
   return String(value ?? '').toLowerCase().replace(/ё/g, 'е');
 }
 
+// Числовые и словесные синонимы достоинств младших арканов:
+// «3», «три» и «тройка» должны находить одну и ту же карту.
+const SEARCH_RANK_ALIASES = {
+  ace: ['туз', 'ace', '1'],
+  2: ['двойка', 'два', 'две', '2', 'two'],
+  3: ['тройка', 'три', '3', 'three'],
+  4: ['четверка', 'четыре', '4', 'four'],
+  5: ['пятерка', 'пять', '5', 'five'],
+  6: ['шестерка', 'шесть', '6', 'six'],
+  7: ['семерка', 'семь', '7', 'seven'],
+  8: ['восьмерка', 'восемь', '8', 'eight'],
+  9: ['девятка', 'девять', '9', 'nine'],
+  10: ['десятка', 'десять', '10', 'ten'],
+  page: ['паж', 'page', '11'],
+  knight: ['рыцарь', 'knight', '12'],
+  queen: ['королева', 'дама', 'queen', '13'],
+  king: ['король', 'king', '14'],
+};
+
+const SEARCH_SUIT_ALIASES = {
+  wands: ['жезл', 'жезлы', 'жезлов', 'посох', 'посохи', 'wand', 'wands'],
+  cups: ['кубок', 'кубки', 'кубков', 'чаша', 'чаши', 'cup', 'cups'],
+  swords: ['меч', 'мечи', 'мечей', 'sword', 'swords'],
+  pentacles: ['пентакль', 'пентакли', 'пентаклей', 'монета', 'монеты', 'денарий', 'денарии', 'pentacle', 'pentacles'],
+};
+
+function cardSearchAliases(card) {
+  const arcana = card?.arcana ?? card?.card_arcana;
+  if (arcana !== 'minor') return '';
+
+  const suit = card?.suit ?? card?.card_suit;
+  const rank = card?.rank ?? card?.card_rank;
+  return [
+    ...(SEARCH_RANK_ALIASES[String(rank)] ?? []),
+    ...(SEARCH_SUIT_ALIASES[suit] ?? []),
+  ].join(' ');
+}
+
+function searchTokens(query) {
+  return normalizeSearchText(query).trim().split(/\s+/).filter(Boolean);
+}
+
+// Числовые токены сравниваем целиком: «3» не должно совпадать с «13»,
+// а «1» — с «10», «11» и «14».
+function searchTokenMatches(haystack, token) {
+  if (/^\d+$/.test(token)) {
+    return new RegExp(`(^|[^0-9])${token}([^0-9]|$)`).test(haystack);
+  }
+  return haystack.includes(token);
+}
+
+function searchTokenIndex(haystack, token) {
+  if (!/^\d+$/.test(token)) return haystack.indexOf(token);
+  const match = new RegExp(`(^|[^0-9])${token}([^0-9]|$)`).exec(haystack);
+  return match ? match.index + match[1].length : -1;
+}
+
 function searchSnippet(value, query, max = 150) {
   const text = String(value ?? '').replace(/\s+/g, ' ').trim();
   if (!text) return '';
 
   const haystack = normalizeSearchText(text);
-  const index = haystack.indexOf(normalizeSearchText(query));
+  const tokens = searchTokens(query);
+  let index = -1;
+  for (const token of tokens) {
+    const at = searchTokenIndex(haystack, token);
+    if (at !== -1 && (index === -1 || at < index)) index = at;
+  }
   if (index === -1) return journalExcerpt(text, max);
 
   const start = Math.max(0, index - Math.floor(max / 3));
@@ -5681,15 +5789,21 @@ function searchSnippet(value, query, max = 150) {
 }
 
 function matchesSearch(values, query) {
-  return normalizeSearchText(values.filter(Boolean).join(' ')).includes(normalizeSearchText(query));
+  const tokens = searchTokens(query);
+  if (tokens.length === 0) return true;
+  const haystack = normalizeSearchText(values.filter(Boolean).join(' '));
+  return tokens.every((token) => searchTokenMatches(haystack, token));
 }
 
 function pickSnippet(values, query, max = 150) {
-  const needle = normalizeSearchText(query);
+  const tokens = searchTokens(query);
   const source = values
     .filter(Boolean)
     .map((value) => String(value))
-    .find((text) => normalizeSearchText(text).includes(needle));
+    .find((text) => {
+      const haystack = normalizeSearchText(text);
+      return tokens.some((token) => searchTokenMatches(haystack, token));
+    });
   return source ? searchSnippet(source, query, max) : '';
 }
 
@@ -5727,6 +5841,7 @@ function cardSearchRow(card, query) {
     card.upright,
     card.reversed,
     card.notes,
+    cardSearchAliases(card),
     personal,
   ];
 
