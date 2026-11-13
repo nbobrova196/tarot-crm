@@ -594,6 +594,136 @@ document.addEventListener('keydown', (event) => {
   wrapper.querySelector('.custom-select-trigger')?.focus();
 });
 
+/* ---------- Подсказки для обрезанного текста ---------- */
+
+let truncationTooltip = null;
+let truncationTooltipSource = null;
+let measureCanvas = null;
+
+function ensureTruncationTooltip() {
+  if (truncationTooltip && document.contains(truncationTooltip)) return truncationTooltip;
+
+  truncationTooltip = document.createElement('div');
+  truncationTooltip.className = 'truncation-tooltip';
+  truncationTooltip.setAttribute('role', 'tooltip');
+  truncationTooltip.hidden = true;
+  document.body.appendChild(truncationTooltip);
+  return truncationTooltip;
+}
+
+function hideTruncationTooltip() {
+  if (truncationTooltip) truncationTooltip.hidden = true;
+}
+
+function truncationElementFor(target) {
+  if (!(target instanceof Element)) return null;
+
+  const trigger = target.closest('.custom-select-trigger');
+  if (trigger) {
+    const label = trigger.querySelector('.custom-select-label');
+    if (label) return label;
+  }
+
+  const label = target.closest('.custom-select-label');
+  if (label) return label;
+
+  const option = target.closest('.custom-select-option');
+  if (option) return option;
+
+  let element = target;
+  for (let depth = 0; element && depth < 4; depth += 1, element = element.parentElement) {
+    if (element === document.body || element === document.documentElement) break;
+    const style = getComputedStyle(element);
+    if ((style.textOverflow === 'ellipsis' || style.whiteSpace === 'nowrap')
+      && element.scrollWidth > element.clientWidth + 1) {
+      return element;
+    }
+  }
+  return null;
+}
+
+function selectTextTruncated(select) {
+  const option = select.selectedOptions[0];
+  if (!option || !select.clientWidth) return false;
+
+  const style = getComputedStyle(select);
+  measureCanvas ??= document.createElement('canvas');
+  const context = measureCanvas.getContext('2d');
+  if (!context) return false;
+
+  context.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+  const textWidth = context.measureText(option.textContent.trim()).width;
+  const padding = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+  return textWidth + padding + 26 > select.clientWidth;
+}
+
+function showTruncationTooltip(source, text) {
+  const tooltip = ensureTruncationTooltip();
+  truncationTooltipSource = source;
+  const host = source.closest('dialog[open]') ?? document.body;
+  if (tooltip.parentElement !== host) host.appendChild(tooltip);
+
+  tooltip.textContent = text;
+  tooltip.hidden = false;
+  tooltip.style.left = '0px';
+  tooltip.style.top = '0px';
+
+  const rect = source.getBoundingClientRect();
+  const tooltipRect = tooltip.getBoundingClientRect();
+  const margin = 8;
+  let left = rect.left + (rect.width - tooltipRect.width) / 2;
+  left = Math.max(margin, Math.min(left, window.innerWidth - tooltipRect.width - margin));
+  let top = rect.top - tooltipRect.height - 7;
+  if (top < margin) top = rect.bottom + 7;
+
+  tooltip.style.left = `${Math.round(left)}px`;
+  tooltip.style.top = `${Math.round(top)}px`;
+}
+
+function handleTruncationHover(target) {
+  if (!(target instanceof Element)) {
+    hideTruncationTooltip();
+    return;
+  }
+
+  const select = target.closest('select');
+  if (select && !select.hidden) {
+    const option = select.selectedOptions[0];
+    if (option && selectTextTruncated(select)) {
+      showTruncationTooltip(select, option.textContent.trim());
+      return;
+    }
+    hideTruncationTooltip();
+    return;
+  }
+
+  const source = truncationElementFor(target);
+  if (source && source.scrollWidth > source.clientWidth + 1) {
+    const text = source.textContent.replace(/\s+/g, ' ').trim();
+    if (text) {
+      showTruncationTooltip(source, text);
+      return;
+    }
+  }
+
+  hideTruncationTooltip();
+}
+
+document.addEventListener('mouseover', (event) => handleTruncationHover(event.target));
+document.addEventListener('focusin', (event) => handleTruncationHover(event.target));
+document.addEventListener('mouseout', (event) => {
+  const related = event.relatedTarget;
+  const source = truncationTooltipSource;
+  if (source && related instanceof Node
+    && (source.contains(related) || source.parentElement?.contains(related))) {
+    return;
+  }
+  hideTruncationTooltip();
+});
+document.addEventListener('focusout', hideTruncationTooltip);
+window.addEventListener('scroll', hideTruncationTooltip, true);
+window.addEventListener('resize', hideTruncationTooltip);
+
 // Отвязка событий и раскладов: один делегированный обработчик на всё приложение,
 // чтобы повторные перерисовки не накапливали слушатели.
 viewEl.addEventListener('click', async (clickEvent) => {
@@ -7024,6 +7154,7 @@ function setupInterpDialog() {
 /* ---------- Маршрутизация ---------- */
 
 function route() {
+  hideTruncationTooltip();
   const hash = location.hash.replace(/^#\/?/, '') || 'overview';
   const [raw, queryString = ''] = hash.split('?');
   const params = new URLSearchParams(queryString);
