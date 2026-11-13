@@ -1107,6 +1107,7 @@ input[type="search"]::-webkit-search-cancel-button {
 .form input,
 .form textarea,
 .form select {
+  min-width: 0;
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 9px;
@@ -1117,6 +1118,7 @@ input[type="search"]::-webkit-search-cancel-button {
 }
 
 .form select {
+  width: 100%;
   cursor: pointer;
 }
 
@@ -1144,8 +1146,12 @@ input[type="search"]::-webkit-search-cancel-button {
 
 .form-row {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
+}
+
+.form-row > * {
+  min-width: 0;
 }
 
 .form-actions {
