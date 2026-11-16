@@ -6766,6 +6766,119 @@ async function getHealth() {
   return healthCache;
 }
 
+/* ---------- О программе и обновления ---------- */
+
+function repositoryReleasesUrl(health) {
+  const repository = String(health?.repository ?? '').trim()
+    .replace(/^git@github\.com:/, 'https://github.com/')
+    .replace(/\.git$/, '');
+  return /^https:\/\/github\.com\/[^/]+\/[^/]+$/.test(repository)
+    ? `${repository}/releases`
+    : null;
+}
+
+function setAboutStatus(text, tone = '') {
+  const status = document.getElementById('about-status');
+  if (!status) return;
+  status.textContent = text;
+  status.className = `about-status${tone ? ` ${tone}` : ' muted'}`;
+}
+
+function setAboutReleaseLink(url, text = '') {
+  const row = document.getElementById('about-release-row');
+  const link = document.getElementById('about-release-link');
+  if (!row || !link) return;
+
+  if (!url) {
+    row.hidden = true;
+    link.removeAttribute('href');
+    return;
+  }
+
+  link.href = url;
+  link.textContent = text;
+  row.hidden = false;
+}
+
+function setupAbout() {
+  const dialog = document.getElementById('about-dialog');
+  if (!dialog) return;
+
+  const openButton = document.getElementById('about-open');
+  const checkButton = document.getElementById('about-check');
+
+  document.getElementById('about-close')?.addEventListener('click', () => dialog.close());
+  document.getElementById('about-ok')?.addEventListener('click', () => dialog.close());
+  dialog.addEventListener('click', (event) => {
+    if (event.target === dialog) dialog.close();
+  });
+
+  openButton?.addEventListener('click', async () => {
+    const health = await getHealth();
+
+    document.getElementById('about-version').textContent = health?.version ?? 'неизвестна';
+    document.getElementById('about-schema').textContent = health?.schemaVersion
+      ? `v${health.schemaVersion}`
+      : '—';
+
+    const releases = repositoryReleasesUrl(health);
+    const allLink = document.getElementById('about-releases');
+    if (releases) {
+      allLink.href = releases;
+      allLink.hidden = false;
+    } else {
+      allLink.hidden = true;
+    }
+
+    setAboutStatus(
+      'Проверка выполняется только по кнопке. Приложение не отправляет данные само.',
+    );
+    setAboutReleaseLink(null);
+    if (checkButton) checkButton.disabled = false;
+    dialog.showModal();
+  });
+
+  checkButton?.addEventListener('click', async () => {
+    checkButton.disabled = true;
+    setAboutStatus('Проверяю на GitHub…');
+    setAboutReleaseLink(null);
+
+    try {
+      const result = await api('/api/update-check');
+      if (result.updateAvailable) {
+        const size = result.updateAsset?.size
+          ? ` (${formatBytes(result.updateAsset.size)})`
+          : '';
+        setAboutStatus(
+          `Доступна версия ${result.latestVersion}. У вас ${result.currentVersion}. `
+          + 'Данные сохранятся, если заменить все файлы, кроме папки data.',
+          'is-new',
+        );
+        setAboutReleaseLink(
+          result.updateAsset?.url ?? result.releaseUrl,
+          result.updateAsset
+            ? `Скачать обновление${size} →`
+            : 'Открыть выпуск на GitHub →',
+        );
+      } else {
+        setAboutStatus(`У вас последняя версия — ${result.currentVersion}.`, 'is-ok');
+        if (result.releaseUrl) {
+          setAboutReleaseLink(result.releaseUrl, 'Что нового в этом выпуске →');
+        }
+      }
+    } catch (error) {
+      setAboutStatus(
+        error instanceof TypeError
+          ? 'Не удалось связаться с приложением. Проверьте, что сервер запущен.'
+          : error.message,
+        'is-error',
+      );
+    } finally {
+      checkButton.disabled = false;
+    }
+  });
+}
+
 const FEEDBACK_TOPIC_SUBJECTS = {
   bug: '[Таро] Баг',
   inaccuracy: '[Таро] Неточность',
@@ -7248,6 +7361,8 @@ async function checkServer() {
     const health = await response.json();
     dot.classList.add('is-ok');
     text.textContent = `сервер работает · схема v${health.schemaVersion}`;
+    const versionEl = document.getElementById('app-version');
+    if (versionEl && health.version) versionEl.textContent = health.version;
   } catch {
     dot.classList.add('is-error');
     text.textContent = 'сервер не отвечает';
@@ -7257,6 +7372,7 @@ async function checkServer() {
 setupFeedback();
 setupBackup();
 setupInterpDialog();
+setupAbout();
 
 window.addEventListener('hashchange', route);
 route();

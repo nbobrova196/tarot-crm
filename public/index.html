@@ -39,6 +39,11 @@
             </svg>
           </button>
         </div>
+        <button class="sidebar-about" id="about-open" type="button"
+                title="О программе и обновления">
+          <span>О программе</span>
+          <span class="sidebar-version" id="app-version"></span>
+        </button>
         <div class="sidebar-backup">
           <button class="sidebar-backup-btn" id="backup-now" type="button"
                   title="Создать резервную копию базы">
@@ -104,6 +109,39 @@
       <p class="field-hint muted">«Сохранить» оставляет сообщение только у вас. Чтобы разработчик его увидел, нажмите «Отправить на почту» или создайте issue на GitHub.</p>
       <p class="feedback-view-all"><a href="#/feedback" id="feedback-view-all">Сохранённые сообщения →</a></p>
     </form>
+  </dialog>
+
+  <dialog class="feedback-dialog" id="about-dialog" aria-labelledby="about-title">
+    <div class="form feedback-form">
+      <div class="feedback-head">
+        <div>
+          <h2 id="about-title">О программе</h2>
+          <p class="muted feedback-sub">Таро — рабочее место таролога. Все записи хранятся только на вашем компьютере.</p>
+        </div>
+        <button class="icon-btn" type="button" id="about-close" aria-label="Закрыть">×</button>
+      </div>
+
+      <div class="about-facts">
+        <div><span class="muted">Версия</span><strong id="about-version">—</strong></div>
+        <div><span class="muted">Схема базы</span><strong id="about-schema">—</strong></div>
+      </div>
+
+      <div class="about-update">
+        <div class="about-update-head">
+          <strong>Обновления</strong>
+          <button class="btn btn-small" type="button" id="about-check">Проверить обновления</button>
+        </div>
+        <p class="about-status muted" id="about-status" role="status">Проверка выполняется только по кнопке. Приложение не отправляет данные само.</p>
+        <p class="about-release-row" id="about-release-row" hidden>
+          <a id="about-release-link" href="#" target="_blank" rel="noopener">Открыть выпуск на GitHub →</a>
+        </p>
+      </div>
+
+      <div class="form-actions">
+        <button class="btn btn-primary" type="button" id="about-ok">Закрыть</button>
+        <a class="btn" id="about-releases" href="#" target="_blank" rel="noopener" hidden>Все выпуски</a>
+      </div>
+    </div>
   </dialog>
 
   <dialog class="feedback-dialog" id="interp-dialog" aria-labelledby="interp-dialog-title">

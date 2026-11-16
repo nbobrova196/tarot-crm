@@ -203,6 +203,37 @@ a:hover {
   outline: none;
 }
 
+.sidebar-about {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 0;
+  border: none;
+  background: none;
+  color: rgba(167, 157, 181, 0.75);
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.sidebar-about:hover,
+.sidebar-about:focus-visible {
+  color: var(--gold-soft);
+  outline: none;
+}
+
+.sidebar-version {
+  color: rgba(167, 157, 181, 0.5);
+  font-variant-numeric: tabular-nums;
+}
+
+.sidebar-version:not(:empty)::before {
+  content: '·';
+  margin-right: 5px;
+}
+
 .sidebar-backup {
   display: flex;
   flex-direction: column;
@@ -4186,6 +4217,71 @@ input[type="date"] {
 .feedback-view-all {
   margin: 0;
   font-size: 12.5px;
+}
+
+.about-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.about-facts > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 140px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-soft);
+  font-size: 12px;
+}
+
+.about-facts strong {
+  color: var(--text);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.about-update {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-soft);
+}
+
+.about-update-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.about-status {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.about-status.is-ok {
+  color: #9fd8b7;
+}
+
+.about-status.is-new {
+  color: var(--gold-soft);
+}
+
+.about-status.is-error {
+  color: #e59a97;
+}
+
+.about-release-row {
+  margin: 0;
+  font-size: 13px;
 }
 
 .feedback-list {

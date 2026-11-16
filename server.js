@@ -148,6 +148,114 @@ function httpError(message, status) {
   return Object.assign(new Error(message), { status });
 }
 
+// Проверка обновлений ходит на GitHub только по кнопке в интерфейсе.
+// Никаких фоновых запросов и телеметрии: без нажатия приложение молчит.
+function repositorySlug(value) {
+  const match = String(value ?? '').match(/github\.com[/:]([^/\s]+)\/([^/\s#?]+?)(?:\.git)?$/i);
+  return match ? { owner: match[1], repo: match[2] } : null;
+}
+
+function parseVersion(value) {
+  const match = String(value ?? '').trim().match(/^v?(\d+(?:\.\d+)*)(?:-([0-9A-Za-z.-]+))?$/);
+  if (!match) return null;
+  return {
+    numbers: match[1].split('.').map(Number),
+    prerelease: match[2] ?? null,
+  };
+}
+
+function compareVersions(leftValue, rightValue) {
+  const left = parseVersion(leftValue);
+  const right = parseVersion(rightValue);
+  if (!left || !right) return 0;
+
+  const length = Math.max(left.numbers.length, right.numbers.length);
+  for (let index = 0; index < length; index += 1) {
+    const difference = (left.numbers[index] ?? 0) - (right.numbers[index] ?? 0);
+    if (difference !== 0) return difference > 0 ? 1 : -1;
+  }
+
+  if (left.prerelease === right.prerelease) return 0;
+  if (!left.prerelease) return 1;
+  if (!right.prerelease) return -1;
+  return left.prerelease.localeCompare(right.prerelease);
+}
+
+async function checkForUpdates() {
+  const slug = repositorySlug(pkg.repository);
+  if (!slug) {
+    throw httpError('В настройках приложения не указан адрес репозитория GitHub.', 500);
+  }
+
+  let response;
+  try {
+    response = await fetch(
+      `https://api.github.com/repos/${slug.owner}/${slug.repo}/releases/latest`,
+      {
+        headers: {
+          accept: 'application/vnd.github+json',
+          'user-agent': `tarot-crm/${pkg.version}`,
+          'x-github-api-version': '2022-11-28',
+        },
+        signal: AbortSignal.timeout(9000),
+      },
+    );
+  } catch {
+    throw httpError(
+      'Не удалось связаться с GitHub. Проверьте интернет и попробуйте ещё раз.',
+      502,
+    );
+  }
+
+  if (response.status === 404) {
+    throw httpError('На GitHub пока нет опубликованных выпусков.', 404);
+  }
+  if (response.status === 403 || response.status === 429) {
+    throw httpError(
+      'GitHub временно ограничил проверку. Попробуйте через несколько минут.',
+      429,
+    );
+  }
+  if (!response.ok) {
+    throw httpError(`GitHub ответил ошибкой ${response.status}. Попробуйте позже.`, 502);
+  }
+
+  let release;
+  try {
+    release = await response.json();
+  } catch {
+    throw httpError('GitHub вернул непонятный ответ. Попробуйте позже.', 502);
+  }
+
+  const latestVersion = String(release.tag_name ?? release.name ?? '')
+    .replace(/^v/i, '')
+    .trim();
+  if (!latestVersion) {
+    throw httpError('Не удалось определить версию последнего выпуска.', 502);
+  }
+
+  const updateAsset = Array.isArray(release.assets)
+    ? release.assets.find((asset) => /update.*\.zip$/i.test(String(asset.name ?? '')))
+    : null;
+
+  return {
+    currentVersion: pkg.version,
+    latestVersion,
+    updateAvailable: compareVersions(latestVersion, pkg.version) > 0,
+    releaseUrl: typeof release.html_url === 'string' ? release.html_url : null,
+    releaseName: typeof release.name === 'string' ? release.name : null,
+    publishedAt: typeof release.published_at === 'string' ? release.published_at : null,
+    notes: typeof release.body === 'string' ? release.body.slice(0, 4000) : '',
+    updateAsset: updateAsset
+      ? {
+        name: updateAsset.name,
+        url: updateAsset.browser_download_url,
+        size: Number(updateAsset.size) || 0,
+      }
+      : null,
+  };
+}
+
 function readJsonBody(req, limit = 1_000_000) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -1341,6 +1449,8 @@ const routes = [
     dbFile,
     uptime: Math.round(process.uptime()),
   })],
+
+  ['GET', /^\/api\/update-check$/, () => checkForUpdates()],
 
   ['GET', /^\/api\/stats$/, () => getStats()],
 
