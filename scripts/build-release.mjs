@@ -207,7 +207,10 @@ for (const name of names) {
     await cp(path.join(rootDir, file), path.join(appDir, file));
   }
   for (const dir of ['public', 'seed', 'docs']) {
-    await cp(path.join(rootDir, dir), path.join(appDir, dir), { recursive: true });
+    await cp(path.join(rootDir, dir), path.join(appDir, dir), {
+      recursive: true,
+      filter: (source) => path.basename(source) !== '.DS_Store',
+    });
   }
 
   // package.json кладём отдельно: в релиз попадает актуальный адрес репозитория.
@@ -247,9 +250,77 @@ for (const name of names) {
   console.log(`Готово: dist/${zipName} — ${(size / 1024 / 1024).toFixed(1)} МБ`);
 }
 
+// Универсальный архив обновления: только файлы программы.
+// Node.js, изображения карт и скриншоты остаются в полном архиве,
+// поэтому обновление весит в разы меньше.
+const updateStage = path.join(distDir, '.stage', 'update');
+const updateApp = updateStage;
+const updatePayload = path.join(updateApp, 'update');
+await rm(updateStage, { recursive: true, force: true });
+await mkdir(updatePayload, { recursive: true });
+
+const updateFiles = ['server.js', 'db.js', 'seed.js', 'README.md', 'РУКОВОДСТВО.md', 'РУКОВОДСТВО.pdf'];
+if (existsSync(path.join(rootDir, 'LICENSE'))) updateFiles.push('LICENSE');
+
+for (const file of updateFiles) {
+  await cp(path.join(rootDir, file), path.join(updatePayload, file));
+}
+await cp(path.join(rootDir, 'seed'), path.join(updatePayload, 'seed'), {
+  recursive: true,
+  filter: (source) => path.basename(source) !== '.DS_Store',
+});
+await cp(path.join(rootDir, 'public'), path.join(updatePayload, 'public'), {
+  recursive: true,
+  filter: (source) => {
+    if (path.basename(source) === '.DS_Store') return false;
+    const relative = path.relative(rootDir, source);
+    return !relative.startsWith(`public${path.sep}cards`);
+  },
+});
+
+await writeFile(
+  path.join(updatePayload, 'package.json'),
+  `${JSON.stringify(pkg, null, 2)}\n`,
+);
+
+await cp(path.join(templatesDir, 'update.js'), path.join(updateApp, 'update.js'));
+await cp(
+  path.join(templatesDir, 'update-mac.command'),
+  path.join(updateApp, 'Обновить Таро.command'),
+);
+await chmod(path.join(updateApp, 'Обновить Таро.command'), 0o755);
+
+const updateWindowsLauncher = await readFile(
+  path.join(templatesDir, 'update-win.bat'),
+  'utf8',
+);
+await writeFile(
+  path.join(updateApp, 'Обновить Таро.bat'),
+  updateWindowsLauncher.replace(/\r?\n/g, '\r\n'),
+);
+await cp(
+  path.join(templatesDir, 'ОБНОВЛЕНИЕ.txt'),
+  path.join(updateApp, 'ОБНОВЛЕНИЕ.txt'),
+);
+
+const updateZipName = `Tarot-${pkg.version}-update.zip`;
+const updateZip = path.join(distDir, updateZipName);
+await rm(updateZip, { force: true });
+run(
+  'zip',
+  ['-q', '-r', updateZip, 'update', 'update.js', 'Обновить Таро.command', 'Обновить Таро.bat', 'ОБНОВЛЕНИЕ.txt'],
+  { cwd: updateStage },
+);
+await markZipUtf8(updateZip);
+
+const updateSize = (await stat(updateZip)).size;
+console.log(`Готово: dist/${updateZipName} — ${(updateSize / 1024 / 1024).toFixed(1)} МБ`);
+
 await rm(path.join(distDir, '.stage'), { recursive: true, force: true });
 
-const archives = (await readdir(distDir)).filter((file) => file.endsWith('.zip')).sort();
+const archives = (await readdir(distDir))
+  .filter((file) => file.endsWith('.zip') && file.startsWith(`Tarot-${pkg.version}-`))
+  .sort();
 if (archives.length > 0) {
   const lines = [];
   for (const file of archives) {

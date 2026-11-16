@@ -14,16 +14,18 @@
 Готовые сборки лежат в разделе **[Releases](../../releases)**. Устанавливать ничего
 не нужно — всё уже лежит внутри архива.
 
-Прямые ссылки на версию **0.1.1**:
+Прямые ссылки на версию **0.1.2**:
 
 | Система | Архив | Размер |
 |---|---|---|
-| macOS, чип Apple (M1–M4) | **[Tarot-0.1.1-macOS-AppleSilicon.zip](https://github.com/nbobrova196/tarot-crm/releases/download/v0.1.1/Tarot-0.1.1-macOS-AppleSilicon.zip)** | 63 МБ |
-| macOS, Intel | **[Tarot-0.1.1-macOS-Intel.zip](https://github.com/nbobrova196/tarot-crm/releases/download/v0.1.1/Tarot-0.1.1-macOS-Intel.zip)** | 65 МБ |
-| Windows | **[Tarot-0.1.1-Windows.zip](https://github.com/nbobrova196/tarot-crm/releases/download/v0.1.1/Tarot-0.1.1-Windows.zip)** | 59 МБ |
-| Linux (x64) | **[Tarot-0.1.1-Linux.zip](https://github.com/nbobrova196/tarot-crm/releases/download/v0.1.1/Tarot-0.1.1-Linux.zip)** | 69 МБ |
+| macOS, чип Apple (M1–M4) | **[Tarot-0.1.2-macOS-AppleSilicon.zip](https://github.com/nbobrova196/tarot-crm/releases/download/v0.1.2/Tarot-0.1.2-macOS-AppleSilicon.zip)** | ≈ 64 МБ |
+| macOS, Intel | **[Tarot-0.1.2-macOS-Intel.zip](https://github.com/nbobrova196/tarot-crm/releases/download/v0.1.2/Tarot-0.1.2-macOS-Intel.zip)** | ≈ 65 МБ |
+| Windows | **[Tarot-0.1.2-Windows.zip](https://github.com/nbobrova196/tarot-crm/releases/download/v0.1.2/Tarot-0.1.2-Windows.zip)** | ≈ 61 МБ |
+| Linux (x64) | **[Tarot-0.1.2-Linux.zip](https://github.com/nbobrova196/tarot-crm/releases/download/v0.1.2/Tarot-0.1.2-Linux.zip)** | ≈ 69 МБ |
 
-Контрольные суммы — **[SHA256SUMS.txt](https://github.com/nbobrova196/tarot-crm/releases/download/v0.1.1/SHA256SUMS.txt)**.
+Для обновления с 0.1.1 достаточно **[Tarot-0.1.2-update.zip](https://github.com/nbobrova196/tarot-crm/releases/download/v0.1.2/Tarot-0.1.2-update.zip)** — около 6 МБ.
+
+Контрольные суммы — **[SHA256SUMS.txt](https://github.com/nbobrova196/tarot-crm/releases/download/v0.1.2/SHA256SUMS.txt)**.
 Все файлы также доступны на странице **[Releases](../../releases)**.
 
 ### Как запустить
@@ -44,8 +46,18 @@
   «Конфиденциальность и безопасность» → «Всё равно открыть»;
 - **Windows:** «Подробнее» → «Выполнить всё равно».
 
-Данные хранятся в папке `data` рядом с приложением. При обновлении замените все
-файлы, кроме `data`.
+Данные хранятся в папке `data` рядом с приложением.
+
+### Как обновиться
+
+1. Проверьте версию в приложении: «О программе» → «Проверить обновления».
+2. Скачайте из релиза `Tarot-<версия>-update.zip` — это около 6 МБ.
+3. Распакуйте архив прямо в папку «Таро» и запустите «Обновить Таро».
+   Скрипт сохранит копию базы в `data/backups`, заменит файлы и запустит
+   приложение. Папка `data` не затрагивается.
+
+Полный архив нужен только для первой установки или если изменились изображения
+карт. При обновлении полным архивом замените все файлы, кроме `data`.
 
 ## Запуск из исходников
 
@@ -75,8 +87,10 @@ node scripts/build-release.mjs
 ```
 
 Скрипт скачивает официальные бинарники Node.js с nodejs.org, проверяет контрольные
-суммы и собирает архивы в `dist/`. Можно выбрать платформы:
-`node scripts/build-release.mjs mac-arm64 win-x64`.
+суммы и собирает полные архивы и общий `Tarot-<версия>-update.zip` в `dist/`.
+Можно выбрать платформы: `node scripts/build-release.mjs mac-arm64 win-x64`.
+Архив обновления не содержит Node.js, изображений карт и скриншотов, поэтому
+весит около 6 МБ.
 
 ## Сборка PDF руководства
 
@@ -356,7 +370,7 @@ node scripts/fetch-images.js --force  # скачает все заново
 
 ## Версия и публикация
 
-Текущая версия — **0.1.1 (бета)**. Готовые архивы публикуются в разделе
+Текущая версия — **0.1.2 (бета)**. Готовые архивы публикуются в разделе
 **[Releases](../../releases)**. Как собрать релиз и обновить версию — в
 [PUBLISH.md](PUBLISH.md).
 

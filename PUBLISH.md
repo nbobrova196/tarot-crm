@@ -216,12 +216,16 @@ node scripts/build-release.mjs
 Получится:
 
 ```
-dist/Tarot-0.1.1-macOS-AppleSilicon.zip
-dist/Tarot-0.1.1-macOS-Intel.zip
-dist/Tarot-0.1.1-Windows.zip
-dist/Tarot-0.1.1-Linux.zip      # если собирали linux-x64
+dist/Tarot-0.1.2-macOS-AppleSilicon.zip
+dist/Tarot-0.1.2-macOS-Intel.zip
+dist/Tarot-0.1.2-Windows.zip
+dist/Tarot-0.1.2-Linux.zip      # если собирали linux-x64
+dist/Tarot-0.1.2-update.zip     # общий архив обновления, около 6 МБ
 dist/SHA256SUMS.txt
 ```
+
+`update.zip` не содержит Node.js, изображений карт и скриншотов. Внутри лежит
+скрипт, который перед заменой файлов делает резервную копию базы в `data/backups`.
 
 Архивы и скачанные бинарники Node в Git не попадают: `dist/` и `.cache/` есть
 в `.gitignore`. Их нужно прикрепить к релизу на GitHub.
@@ -235,21 +239,22 @@ dist/SHA256SUMS.txt
 ### 3. Создайте тег
 
 ```bash
-git tag -a v0.1.1 -m "Таро v0.1.1"
-git push origin v0.1.1
+git tag -a v0.1.2 -m "Таро v0.1.2"
+git push origin v0.1.2
 ```
 
 ### 4. Прикрепите архивы к релизу
 
-Через сайт GitHub: **Releases → Draft a new release** → выберите тег `v0.1.1`,
-заголовок «Таро v0.1.1», опишите изменения и перетащите файлы из `dist/`.
+Через сайт GitHub: **Releases → Draft a new release** → выберите тег `v0.1.2`,
+заголовок «Таро v0.1.2», опишите изменения и перетащите файлы из `dist/`:
+полные архивы, `Tarot-0.1.2-update.zip` и `SHA256SUMS.txt`.
 
 Через GitHub CLI:
 
 ```bash
-gh release create v0.1.1 dist/*.zip dist/SHA256SUMS.txt \
-  --title "Таро v0.1.1" \
-  --notes "Почта для отзывов, восстановление из резервной копии и PDF руководства."
+gh release create v0.1.2 dist/Tarot-0.1.2-*.zip dist/SHA256SUMS.txt \
+  --title "Таро v0.1.2" \
+  --notes "Каталог трактовок, поиск по номеру карты, проверка обновлений и обновление без полного архива."
 ```
 
 После публикации ссылка `../../releases` в README начнёт вести на страницу релизов.
@@ -257,4 +262,6 @@ gh release create v0.1.1 dist/*.zip dist/SHA256SUMS.txt \
 ### 5. Обновление версии
 
 Перед новой сборкой поменяйте `version` в `package.json` — имя архивов возьмётся
-оттуда. Пользователям пишите: «замените все файлы, кроме папки `data`».
+оттуда. Пользователям пишите: «скачайте `Tarot-<версия>-update.zip`, распакуйте
+в папку „Таро“ и запустите „Обновить Таро“». Скрипт сам сохранит копию базы
+и не тронет папку `data`.
